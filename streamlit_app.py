@@ -6,7 +6,6 @@ import plotly.express as px
 # --- KONFIGURATION ---
 st.set_page_config(page_title="Leichtathletik Auswertung", layout="wide", page_icon="🏆")
 
-# Datenbankverbindung
 def get_connection():
     return sqlite3.connect('leichtathletik.db', check_same_thread=False)
 
@@ -14,7 +13,7 @@ conn = get_connection()
 
 # --- DATENVERARBEITUNG ---
 def load_and_clean_data(file):
-    """Liest CSV stabil ein und bereinigt Formate."""
+    """Liest CSV stabil ein."""
     try:
         file.seek(0)
         try:
@@ -26,8 +25,8 @@ def load_and_clean_data(file):
         if df.shape[1] <= 1:
             file.seek(0)
             df = pd.read_csv(file, sep=',', encoding='latin1')
-
-        # Numerische Konvertierung für Plotly
+        
+        # Vor-Bereinigung: Result_Num für Grafiken
         if 'Result' in df.columns:
             df['Result_Num'] = pd.to_numeric(df['Result'].astype(str).str.replace(',', '.'), errors='coerce')
         
@@ -36,119 +35,119 @@ def load_and_clean_data(file):
         st.error(f"Fehler beim Einlesen: {e}")
         return None
 
-def get_athlete_ranking(df):
-    """Erstellt das Ranking mit Verein, Klasse und gruppierten Leistungen."""
+def get_filtered_ranking(df):
+    """Berechnet das Ranking für U10-U14 mit Leistungsprüfung."""
     
-    # Hilfsspalte für die Darstellung: "Bewerb (Ergebnis)"
-    # Falls Result leer ist, wird nur der Bewerb angezeigt
-    df['Perf_String'] = df.apply(
-        lambda x: f"{x['Event']} ({x['Result']})" if pd.notnull(x['Result']) else x['Event'], 
+    # 1. Filter auf Klassen U10, U12, U14 (enthält WU10, MU10 etc.)
+    target_classes = ['U10', 'U12', 'U14']
+    df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
+
+    # 2. Nur gültige Leistungen zählen (nicht leer, nicht "aufg.", nicht "n.a.", nicht "ab.")
+    invalid_terms = ['aufg.', 'n.a.', 'ab.', 'disq.', 'ogv.']
+    
+    def is_valid(res):
+        res_str = str(res).lower().strip()
+        if pd.isna(res) or any(term in res_str for term in invalid_terms) or res_str == "":
+            return False
+        return True
+
+    # Markiere gültige Leistungen
+    df_filtered['isValid'] = df_filtered['Result'].apply(is_valid)
+    
+    # Hilfsspalte für Anzeige
+    df_filtered['Perf_String'] = df_filtered.apply(
+        lambda x: f"{x['Event']} ({x['Result']})" if x['isValid'] else f"{x['Event']} (-)", 
         axis=1
     )
 
-    # Gruppierung nach Athlet inklusive Verein und Klasse
-    # Wir nehmen den ersten gefundenen Verein/Klasse pro Athlet
-    ranking = df.groupby(['FirstName', 'LastName', 'Yob']).agg({
+    # 3. Gruppierung
+    ranking = df_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg({
         'ClubName': 'first',
         'Class': 'first',
         'Perf_String': lambda x: ', '.join(x.astype(str)),
-        'Result': 'count' 
+        'isValid': 'sum'  # Zählt nur die True-Werte (gültige Leistungen)
     }).reset_index()
 
+    # 4. Kategorisierung nach gültigen Leistungen
     def categorize(count):
         if count >= 3: return "🥇 Gold"
         elif count == 2: return "🥈 Silber"
         elif count == 1: return "🥉 Bronze"
         return "Teilgenommen"
 
-    ranking['Kategorie'] = ranking['Result'].apply(categorize)
+    ranking['Kategorie'] = ranking['isValid'].apply(categorize)
     
-    # Sortier-Logik
+    # Sortierung
     cat_order = {"🥇 Gold": 0, "🥈 Silber": 1, "🥉 Bronze": 2, "Teilgenommen": 3}
     ranking['Sort'] = ranking['Kategorie'].map(cat_order)
-    
-    # Spalten umbenennen für die Anzeige
-    ranking = ranking.rename(columns={
-        'ClubName': 'Verein',
-        'Class': 'Altersklasse',
-        'Perf_String': 'Leistungen (Bewerb & Ergebnis)',
-        'Result': 'Anzahl'
-    })
+    ranking = ranking.sort_values(['Sort', 'LastName']).drop(columns=['Sort'])
 
-    return ranking.sort_values(['Sort', 'LastName']).drop(columns=['Sort'])
+    return ranking
 
-# --- DASHBOARD UI ---
-st.title("🏆 Online Auswertungsseite")
+# --- UI ---
+st.title("🏆 Nachwuchs-Auswertung (U10-U14)")
 
-# Sidebar
 with st.sidebar:
     st.header("📤 Daten-Upload")
     uploaded_file = st.file_uploader("results.csv hochladen", type=['csv'])
-    
     if uploaded_file:
         raw_df = load_and_clean_data(uploaded_file)
         if raw_df is not None:
-            if st.button("💾 In Datenbank speichern"):
+            if st.button("💾 Datenbank aktualisieren"):
                 raw_df.to_sql('ergebnisse', conn, if_exists='replace', index=False)
-                st.sidebar.success("Datenbank aktualisiert!")
-                st.balloons()
-
-    st.divider()
-    if st.button("🗑️ Datenbank leeren"):
+                st.sidebar.success("Daten gespeichert!")
+    
+    if st.button("🗑️ DB löschen"):
         conn.execute("DROP TABLE IF EXISTS ergebnisse")
-        st.warning("Daten gelöscht.")
+        st.rerun()
 
-# --- HAUPTBEREICH ---
 try:
     df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
-
     if not df_db.empty:
-        tab1, tab2, tab3 = st.tabs(["📊 Analyse", "🏆 Athleten-Ranking", "📋 Rohdaten"])
+        tab1, tab2 = st.tabs(["🏆 Medaillen-Ranking", "📊 Statistik & Rohdaten"])
 
         with tab1:
-            st.subheader("Leistungs-Visualisierung")
-            event_list = sorted(df_db['Event'].unique())
-            selected_event = st.selectbox("Bewerb auswählen:", event_list)
-            plot_df = df_db[df_db['Event'] == selected_event].dropna(subset=['Result_Num'])
+            rank_df = get_filtered_ranking(df_db)
             
-            fig = px.box(
-                plot_df, x="Class", y="Result_Num", color="Class",
-                points="all", hover_data=["FirstName", "LastName", "ClubName"],
-                labels={"Result_Num": "Leistung", "Class": "Klasse"}
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            # --- HEADER SUMMEN ---
+            gold_count = len(rank_df[rank_df['Kategorie'] == "🥇 Gold"])
+            silber_count = len(rank_df[rank_df['Kategorie'] == "🥈 Silber"])
+            bronze_count = len(rank_df[rank_df['Kategorie'] == "🥉 Bronze"])
 
-        with tab2:
-            st.subheader("Athleten-Ranking")
-            st.caption("Gold (3+), Silber (2), Bronze (1)")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Anzahl GOLD", f"{gold_count}x")
+            c2.metric("Anzahl SILBER", f"{silber_count}x")
+            c3.metric("Anzahl BRONZE", f"{bronze_count}x")
             
-            rank_df = get_athlete_ranking(df_db)
-            
-            # Suche
-            search = st.text_input("Athlet oder Verein suchen:")
+            st.divider()
+
+            # Suche & Tabelle
+            search = st.text_input("Suche nach Name oder Verein:")
+            display_df = rank_df
             if search:
-                rank_df = rank_df[
+                display_df = rank_df[
                     rank_df['LastName'].str.contains(search, case=False) | 
                     rank_df['FirstName'].str.contains(search, case=False) |
-                    rank_df['Verein'].str.contains(search, case=False)
+                    rank_df['ClubName'].str.contains(search, case=False)
                 ]
 
-            # Tabellendarstellung
             st.dataframe(
-                rank_df[['Kategorie', 'FirstName', 'LastName', 'Yob', 'Verein', 'Altersklasse', 'Leistungen (Bewerb & Ergebnis)', 'Anzahl']],
+                display_df[['Kategorie', 'FirstName', 'LastName', 'Class', 'ClubName', 'Perf_String', 'isValid']],
+                column_config={
+                    "Kategorie": "Status",
+                    "Perf_String": "Gültige Leistungen",
+                    "isValid": "Anzahl",
+                    "Class": "Klasse",
+                    "ClubName": "Verein"
+                },
                 use_container_width=True,
                 hide_index=True
             )
-            
-            # Export
-            csv_data = rank_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 Liste als CSV herunterladen", csv_data, "ranking_liste.csv", "text/csv")
 
-        with tab3:
+        with tab2:
+            st.subheader("Rohdaten Übersicht")
             st.dataframe(df_db, use_container_width=True)
-
     else:
-        st.info("Bitte lade eine CSV-Datei über die Seitenleiste hoch.")
-
-except Exception:
-    st.info("Bereit für den Upload.")
+        st.info("Bitte lade eine Datei hoch.")
+except Exception as e:
+    st.info("Warte auf Daten-Upload...")
