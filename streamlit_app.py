@@ -15,7 +15,10 @@ with st.sidebar:
     uploaded_file = st.file_uploader("results.csv hochladen", type=['csv'])
 
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file, sep=';')
+    try:
+    df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
+    except UnicodeDecodeError:
+    df = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
     
     # Datenbereinigung für Plotly (Komma -> Punkt für numerische Werte)
     df['Result_Clean'] = pd.to_numeric(df['Result'].astype(str).str.replace(',', '.'), errors='coerce')
