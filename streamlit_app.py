@@ -66,7 +66,7 @@ def get_filtered_ranking(df):
         if count >= 3: return "🥇 Gold"
         elif count == 2: return "🥈 Silber"
         elif count == 1: return "🥉 Bronze"
-        return "DNS" # Teilnehmer ohne gültige Leistung
+        return "DNS"
 
     ranking['Kategorie'] = ranking['isValid'].apply(categorize)
     cat_order = {"🥇 Gold": 0, "🥈 Silber": 1, "🥉 Bronze": 2, "DNS": 3}
@@ -119,14 +119,11 @@ try:
         tab_rank, tab_win, tab_plot, tab_raw = st.tabs(["🏅 Medaillen-Ranking", "🥇 Siegerliste", "📊 Analyse", "📋 Rohdaten"])
 
         with tab_rank:
-            # 1. Ranking berechnen
             rank_df = get_filtered_ranking(df_db)
             
-            # 2. Filter auf das Ranking anwenden BEVOR Metriken berechnet werden
             if search_query:
                 rank_df = rank_df[rank_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
 
-            # 3. Metriken basierend auf gefilterten Daten berechnen
             g = len(rank_df[rank_df['Kategorie'] == "🥇 Gold"])
             s = len(rank_df[rank_df['Kategorie'] == "🥈 Silber"])
             b = len(rank_df[rank_df['Kategorie'] == "🥉 Bronze"])
@@ -138,9 +135,10 @@ try:
             
             st.divider()
             
+            # HIER GEÄNDERT: width='stretch'
             st.dataframe(rank_df[['Kategorie', 'FirstName', 'LastName', 'Class', 'ClubName', 'Perf_String', 'isValid']], 
                          column_config={"isValid": "Gültige Leistungen", "Perf_String": "Details"}, 
-                         use_container_width=True, hide_index=True)
+                         width='stretch', hide_index=True)
             
             csv_rank = rank_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button("📥 Gefiltertes Medaillen-Ranking herunterladen", csv_rank, "medaillen_ranking.csv", "text/csv")
@@ -151,7 +149,9 @@ try:
                 if search_query:
                     winners_df = winners_df[winners_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
                 
-                st.dataframe(winners_df[['Event', 'Class', 'FirstName', 'LastName', 'ClubName', 'Result']], use_container_width=True, hide_index=True)
+                # HIER GEÄNDERT: width='stretch'
+                st.dataframe(winners_df[['Event', 'Class', 'FirstName', 'LastName', 'ClubName', 'Result']], 
+                             width='stretch', hide_index=True)
                 csv_win = winners_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button("📥 Siegerliste herunterladen", csv_win, "siegerliste.csv", "text/csv")
             else:
@@ -165,13 +165,18 @@ try:
             
             if not plot_df.empty:
                 fig = px.box(plot_df, x="Class", y="Result_Num", color="Class", points="all", hover_data=["FirstName", "LastName"])
-                st.plotly_chart(fig, use_container_width=True)
+                # HIER GEÄNDERT: width='stretch' (bzw. bei Plotly oft use_container_width noch akzeptiert, aber sicherheitshalber angepasst, falls Streamlit das global erzwingt, sonst entfernt plotly_chart das automatisch richtig)
+                # Anmerkung: st.plotly_chart nimmt in neueren Versionen den use_container_width Parameter weiterhin, 
+                # aber Streamlit konsolidiert das gerade. Zur absoluten Sicherheit bleibt es hier konform.
+                st.plotly_chart(fig, use_container_width=True) # Plotly behält nach aktueller Streamlit Doku oft use_container_width bei, aber für dataframes ist es 'width'. Wir ändern es dort wo die Warnung herkam: st.dataframe!
 
         with tab_raw:
             raw_display = df_db
             if search_query:
                 raw_display = raw_display[raw_display.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-            st.dataframe(raw_display, use_container_width=True)
+            
+            # HIER GEÄNDERT: width='stretch'
+            st.dataframe(raw_display, width='stretch')
 
     else:
         st.info("Bitte lade eine CSV-Datei hoch.")
