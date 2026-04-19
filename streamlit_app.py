@@ -12,32 +12,31 @@ def get_connection():
 
 conn = get_connection()
 
-# --- CUP-PUNKTESYSTEM (Vereinseigener fairer Schlüssel U10-U14) ---
-# Struktur: a (Multiplikator), b (Basiswert/Limit), c (Exponent)
+# --- CUP-PUNKTESYSTEM (Ausbalancierter Schlüssel U10-U14) ---
 CUP_PARAMS = {
     # --- MÄNNLICH ---
     'M_60M':  {'Typ': 'Lauf',   'a': 45.0,   'b': 12.5,  'c': 1.81},
-    'M_10H':  {'Typ': 'Lauf',   'a': 15.0,   'b': 30.0,  'c': 1.8},   # Hindernis kurz
-    'M_20H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 55.0,  'c': 1.8},   # Hindernis lang
-    'M_1K0':  {'Typ': 'Lauf',   'a': 0.05,   'b': 480.0, 'c': 1.85},  # 1000m (in Sekunden)
-    'M_1KSC': {'Typ': 'Lauf',   'a': 0.05,   'b': 480.0, 'c': 1.85},  # Cross/Hindernis 1km
-    'M_800':  {'Typ': 'Lauf',   'a': 0.08,   'b': 360.0, 'c': 1.85},
+    'M_10H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 25.0,  'c': 1.81},  # 100m Hürden
+    'M_20H':  {'Typ': 'Lauf',   'a': 3.5,    'b': 45.0,  'c': 1.81},  # 200m Hürden
+    'M_1K0':  {'Typ': 'Lauf',   'a': 0.08,   'b': 300.0, 'c': 1.85},  # 1000m (Punkte ab 5:00min)
+    'M_1KSC': {'Typ': 'Lauf',   'a': 0.08,   'b': 300.0, 'c': 1.85},  # 1000m Hindernis
+    'M_800':  {'Typ': 'Lauf',   'a': 0.1,    'b': 240.0, 'c': 1.85},  # 800m
     'M_WEI':  {'Typ': 'Sprung', 'a': 0.15,   'b': 150.0, 'c': 1.4},   # Weit (in cm)
     'M_VOR':  {'Typ': 'Wurf',   'a': 12.0,   'b': 5.0,   'c': 1.1},   # Vortex (in m)
     
     # --- WEIBLICH ---
     'W_60M':  {'Typ': 'Lauf',   'a': 48.0,   'b': 13.0,  'c': 1.81},
-    'W_10H':  {'Typ': 'Lauf',   'a': 16.0,   'b': 32.0,  'c': 1.8},
-    'W_20H':  {'Typ': 'Lauf',   'a': 5.5,    'b': 60.0,  'c': 1.8},
-    'W_1K0':  {'Typ': 'Lauf',   'a': 0.045,  'b': 520.0, 'c': 1.85},
-    'W_1KSC': {'Typ': 'Lauf',   'a': 0.045,  'b': 520.0, 'c': 1.85},
-    'W_800':  {'Typ': 'Lauf',   'a': 0.07,   'b': 390.0, 'c': 1.85},
-    'W_WEI':  {'Typ': 'Sprung', 'a': 0.18,   'b': 140.0, 'c': 1.41},  # Weit (in cm)
-    'W_VOR':  {'Typ': 'Wurf',   'a': 13.0,   'b': 4.0,   'c': 1.1},   # Vortex (in m)
+    'W_10H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 26.0,  'c': 1.81},
+    'W_20H':  {'Typ': 'Lauf',   'a': 3.5,    'b': 48.0,  'c': 1.81},
+    'W_1K0':  {'Typ': 'Lauf',   'a': 0.08,   'b': 320.0, 'c': 1.85},
+    'W_1KSC': {'Typ': 'Lauf',   'a': 0.08,   'b': 320.0, 'c': 1.85},
+    'W_800':  {'Typ': 'Lauf',   'a': 0.1,    'b': 260.0, 'c': 1.85},
+    'W_WEI':  {'Typ': 'Sprung', 'a': 0.18,   'b': 140.0, 'c': 1.41},
+    'W_VOR':  {'Typ': 'Wurf',   'a': 13.0,   'b': 4.0,   'c': 1.1},
 }
 
 def calculate_cup_points(row):
-    """Berechnet die Punkte für ein einzelnes Ergebnis."""
+    """Berechnet die fairen Mehrkampfpunkte."""
     try:
         res = row.get('Result_Num', np.nan)
         event = str(row.get('Event', '')).upper().strip()
@@ -48,8 +47,7 @@ def calculate_cup_points(row):
             
         key = f"{gender}_{event}"
         if key not in CUP_PARAMS:
-            # Fallback für unbekannte Bewerbe (gibt 100 Trostpunkte für gültige Teilnahme)
-            return 100 
+            return 100 # Trostpunkte für unbekannte Bewerbe
             
         p = CUP_PARAMS[key]
         points = 0
@@ -58,7 +56,6 @@ def calculate_cup_points(row):
             if res < p['b']:
                 points = p['a'] * ((p['b'] - res) ** p['c'])
         elif p['Typ'] == 'Sprung':
-            # Weitsprung in der CSV ist oft in Metern (z.B. 3,70). Formel braucht cm!
             val = res * 100 if res < 10 else res 
             if val > p['b']:
                 points = p['a'] * ((val - p['b']) ** p['c'])
@@ -101,7 +98,6 @@ def load_and_clean_data(file):
         if 'Result' in df.columns:
             df['Result_Num'] = df['Result'].apply(parse_result_to_number)
             df['isValid'] = df['Result'].apply(is_valid_result)
-            # Punkte direkt beim Einlesen berechnen!
             df['CupPoints'] = df.apply(calculate_cup_points, axis=1)
             
         return df
@@ -111,18 +107,15 @@ def load_and_clean_data(file):
 
 # --- DATEN AUSWERTUNGEN ---
 def get_cup_ranking(df):
-    """Berechnet die Gesamtpunktzahl für den Cup (U10-U14)."""
     target_classes = ['U10', 'U12', 'U14']
     df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
     valid_df = df_filtered[df_filtered['isValid'] == True]
     
     ranking = valid_df.groupby(['FirstName', 'LastName', 'Yob']).agg({
-        'ClubName': 'first',
-        'Class': 'first',
-        'Gender': 'first',
-        'CupPoints': 'sum', # Punkte aufsummieren
-        'Event': lambda x: ', '.join(x.astype(str)), # Absolvierte Bewerbe
-        'isValid': 'count' # Anzahl der Bewerbe
+        'ClubName': 'first', 'Class': 'first', 'Gender': 'first',
+        'CupPoints': 'sum', 
+        'Event': lambda x: ', '.join(x.astype(str)), 
+        'isValid': 'count'
     }).reset_index()
     
     return ranking.sort_values(['Class', 'Gender', 'CupPoints'], ascending=[True, True, False])
@@ -194,7 +187,6 @@ try:
             "📊 Punkte-Cup", "🏅 Teilnahmen-Medaillen", "🥇 Einzel-Sieger", "📈 Grafiken", "📋 Rohdaten"
         ])
 
-        # --- TAB 1: CUP PUNKTE ---
         with tab_cup:
             st.info("Das Punkte-System gewichtet Lauf, Sprung und Wurf altersgerecht für einen fairen Mehrkampf.")
             cup_df = get_cup_ranking(df_db)
@@ -203,13 +195,12 @@ try:
                 cup_df = cup_df[cup_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
                 
             st.dataframe(cup_df[['Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'isValid', 'Event']], 
-                         column_config={"CupPoints": "Gesamtpunkte", "isValid": "Anzahl Bewerbe", "Event": "Absolviert"},
+                         column_config={"CupPoints": "Gesamtpunkte", "isValid": "Bewerbe (Anzahl)", "Event": "Absolviert"},
                          width='stretch', hide_index=True)
             
             csv_cup = cup_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button("📥 Cup-Wertung herunterladen", csv_cup, "cup_wertung.csv", "text/csv")
 
-        # --- TAB 2: MEDAILLEN RANKING ---
         with tab_rank:
             rank_df = get_medal_ranking(df_db)
             if search_query:
@@ -227,7 +218,6 @@ try:
             csv_rank = rank_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button("📥 Medaillen-Ranking herunterladen", csv_rank, "medaillen_ranking.csv", "text/csv")
 
-        # --- TAB 3: SIEGERLISTE ---
         with tab_win:
             winners_df = get_winners_list(df_db)
             if not winners_df.empty:
@@ -239,7 +229,6 @@ try:
                 csv_win = winners_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button("📥 Siegerliste herunterladen", csv_win, "siegerliste.csv", "text/csv")
 
-        # --- TAB 4: ANALYSE ---
         with tab_plot:
             sel_event = st.selectbox("Bewerb für Grafik wählen:", sorted(df_db['Event'].unique()))
             plot_df = df_db[df_db['Event'] == sel_event].dropna(subset=['Result_Num'])
@@ -251,7 +240,6 @@ try:
                 fig.update_layout(yaxis_title="Ergebnis")
                 st.plotly_chart(fig, width="stretch")
 
-        # --- TAB 5: ROHDATEN ---
         with tab_raw:
             raw_display = df_db
             if search_query:
