@@ -11,15 +11,18 @@ def get_connection():
 
 conn = get_connection()
 
-# --- HILFSFUNKTIONEN ---
+# --- ZENTRALE LOGIK: GÜLTIGKEITSPRÜFUNG ---
 def is_valid_result(res):
-    """Prüft streng auf sportlich verwertbare Leistungen."""
-    invalid_terms = ['aufg.', 'n.a.', 'ab.', 'disq.', 'ogv.', 'o.v.', 'dns', 'dnf', 'nm']
-    res_str = str(res).lower().strip()
-    if pd.isna(res) or any(term in res_str for term in invalid_terms) or res_str == "":
+    """
+    Ein Ergebnis ist nur gültig, wenn es mindestens eine Zahl (0-9) enthält.
+    Damit werden 'ogV', 'aufg.', 'n.a.' etc. zuverlässig ausgefiltert.
+    """
+    if pd.isna(res):
         return False
-    return True
+    res_str = str(res)
+    return any(char.isdigit() for char in res_str)
 
+# --- DATENVERARBEITUNG ---
 def load_and_clean_data(file):
     try:
         file.seek(0)
@@ -41,11 +44,12 @@ def load_and_clean_data(file):
         st.error(f"Fehler beim Einlesen: {e}")
         return None
 
-# --- DATEN-AUSWERTUNG ---
 def get_filtered_ranking(df):
-    """Berechnet Medaillen für U10-U14."""
+    """Berechnet Medaillen-Basisdaten für U10-U14."""
     target_classes = ['U10', 'U12', 'U14']
     df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
+    
+    # Strenge Prüfung: Nur Ergebnisse mit Ziffern zählen
     df_filtered['isValid'] = df_filtered['Result'].apply(is_valid_result)
     
     df_filtered['Perf_String'] = df_filtered.apply(
@@ -62,7 +66,7 @@ def get_filtered_ranking(df):
         if count >= 3: return "🥇 Gold"
         elif count == 2: return "🥈 Silber"
         elif count == 1: return "🥉 Bronze"
-        return "DNS" # Geändert von 'Teilgenommen'
+        return "DNS" # Teilnehmer ohne gültige Leistung
 
     ranking['Kategorie'] = ranking['isValid'].apply(categorize)
     cat_order = {"🥇 Gold": 0, "🥈 Silber": 1, "🥉 Bronze": 2, "DNS": 3}
@@ -87,7 +91,7 @@ def get_winners_list(df):
     return pd.DataFrame(winners).sort_values(['Event', 'Class']) if winners else pd.DataFrame()
 
 # --- DASHBOARD UI ---
-st.title("🏆 Zentrale Auswertung: Nachwuchs")
+st.title("🏆 Dynamische Leichtathletik-Auswertung")
 
 with st.sidebar:
     st.header("📤 Daten-Upload")
@@ -95,7 +99,7 @@ with st.sidebar:
     if uploaded_file:
         raw_df = load_and_clean_data(uploaded_file)
         if raw_df is not None:
-            if st.button("💾 Daten in DB speichern"):
+            if st.button("💾 Daten in Datenbank speichern"):
                 raw_df.to_sql('ergebnisse', conn, if_exists='replace', index=False)
                 st.rerun()
 
@@ -108,32 +112,38 @@ try:
     df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
     
     if not df_db.empty:
-        # GLOBALER FILTER
-        st.subheader("🔍 Globale Suche & Filter")
-        search_query = st.text_input("Suchen nach Name, Verein oder Altersklasse (wirkt auf alle Tabs):", "")
+        # GLOBALER FILTER (wirkt auf alle Berechnungen)
+        st.subheader("🔍 Filter & Suche")
+        search_query = st.text_input("Suchen nach Name, Verein oder Altersklasse:", "")
 
-        # Tabs
         tab_rank, tab_win, tab_plot, tab_raw = st.tabs(["🏅 Medaillen-Ranking", "🥇 Siegerliste", "📊 Analyse", "📋 Rohdaten"])
 
         with tab_rank:
+            # 1. Ranking berechnen
             rank_df = get_filtered_ranking(df_db)
             
-            # Statistik-Header
-            g, s, b = len(rank_df[rank_df['Kategorie'] == "🥇 Gold"]), len(rank_df[rank_df['Kategorie'] == "🥈 Silber"]), len(rank_df[rank_df['Kategorie'] == "🥉 Bronze"])
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Medaillen GOLD", g)
-            c2.metric("Medaillen SILBER", s)
-            c3.metric("Medaillen BRONZE", b)
-            
-            # Filter anwenden
+            # 2. Filter auf das Ranking anwenden BEVOR Metriken berechnet werden
             if search_query:
                 rank_df = rank_df[rank_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
 
+            # 3. Metriken basierend auf gefilterten Daten berechnen
+            g = len(rank_df[rank_df['Kategorie'] == "🥇 Gold"])
+            s = len(rank_df[rank_df['Kategorie'] == "🥈 Silber"])
+            b = len(rank_df[rank_df['Kategorie'] == "🥉 Bronze"])
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("GOLD (gefiltert)", g)
+            c2.metric("SILBER (gefiltert)", s)
+            c3.metric("BRONZE (gefiltert)", b)
+            
+            st.divider()
+            
             st.dataframe(rank_df[['Kategorie', 'FirstName', 'LastName', 'Class', 'ClubName', 'Perf_String', 'isValid']], 
-                         column_config={"isValid": "Gültig", "Perf_String": "Leistungen"}, use_container_width=True, hide_index=True)
+                         column_config={"isValid": "Gültige Leistungen", "Perf_String": "Details"}, 
+                         use_container_width=True, hide_index=True)
             
             csv_rank = rank_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 Medaillen-Liste herunterladen", csv_rank, "medaillen_ranking.csv", "text/csv")
+            st.download_button("📥 Gefiltertes Medaillen-Ranking herunterladen", csv_rank, "medaillen_ranking.csv", "text/csv")
 
         with tab_win:
             winners_df = get_winners_list(df_db)
