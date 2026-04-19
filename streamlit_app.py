@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import plotly.express as px
+import numpy as np
 
 # --- KONFIGURATION ---
 st.set_page_config(page_title="Leichtathletik Auswertung Pro", layout="wide", page_icon="🏆")
@@ -11,16 +12,40 @@ def get_connection():
 
 conn = get_connection()
 
-# --- ZENTRALE LOGIK: GÜLTIGKEITSPRÜFUNG ---
+# --- ZENTRALE LOGIK: GÜLTIGKEITSPRÜFUNG & ZAHLENUMWANDLUNG ---
 def is_valid_result(res):
-    """
-    Ein Ergebnis ist nur gültig, wenn es mindestens eine Zahl (0-9) enthält.
-    Damit werden 'ogV', 'aufg.', 'n.a.' etc. zuverlässig ausgefiltert.
-    """
+    """Ein Ergebnis ist nur gültig, wenn es mindestens eine Zahl (0-9) enthält."""
     if pd.isna(res):
         return False
     res_str = str(res)
     return any(char.isdigit() for char in res_str)
+
+def parse_result_to_number(val):
+    """Wandelt Zeiten (M:SS,ms) in Sekunden und normale Werte in Floats um."""
+    if pd.isna(val):
+        return np.nan
+    
+    val_str = str(val).strip().replace(',', '.')
+    
+    # Wenn ein Doppelpunkt vorhanden ist (z.B. 4:09.82) -> in Sekunden umrechnen
+    if ':' in val_str:
+        parts = val_str.split(':')
+        if len(parts) == 2:
+            try:
+                return float(parts[0]) * 60 + float(parts[1])
+            except ValueError:
+                return np.nan
+        elif len(parts) == 3: # Für extrem lange Läufe (h:m:s)
+            try:
+                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+            except ValueError:
+                return np.nan
+    else:
+        # Normale Zahlen (z.B. 11.98)
+        try:
+            return float(val_str)
+        except ValueError:
+            return np.nan
 
 # --- DATENVERARBEITUNG ---
 def load_and_clean_data(file):
@@ -37,7 +62,8 @@ def load_and_clean_data(file):
             df = pd.read_csv(file, sep=',', encoding='latin1')
         
         if 'Result' in df.columns:
-            df['Result_Num'] = pd.to_numeric(df['Result'].astype(str).str.replace(',', '.'), errors='coerce')
+            # Nutzt die neue, intelligente Umwandlung für Plots und Berechnungen
+            df['Result_Num'] = df['Result'].apply(parse_result_to_number)
         
         return df
     except Exception as e:
@@ -49,7 +75,6 @@ def get_filtered_ranking(df):
     target_classes = ['U10', 'U12', 'U14']
     df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
     
-    # Strenge Prüfung: Nur Ergebnisse mit Ziffern zählen
     df_filtered['isValid'] = df_filtered['Result'].apply(is_valid_result)
     
     df_filtered['Perf_String'] = df_filtered.apply(
@@ -80,7 +105,8 @@ def get_winners_list(df):
     df_filtered['isValid'] = df_filtered['Result'].apply(is_valid_result)
     valid_df = df_filtered[df_filtered['isValid'] == True].dropna(subset=['Result_Num'])
     
-    time_events = ['M', 'H', '100', '200', '800', '1K', '2K', '3K']
+    # Zeitbewerbe (kleinste Zahl gewinnt). 600 und 400 hinzugefügt!
+    time_events = ['M', 'H', '100', '200', '400', '600', '800', '1K', '2K', '3K']
     winners = []
     
     for (event, age_class), group in valid_df.groupby(['Event', 'Class']):
@@ -112,7 +138,6 @@ try:
     df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
     
     if not df_db.empty:
-        # GLOBALER FILTER (wirkt auf alle Berechnungen)
         st.subheader("🔍 Filter & Suche")
         search_query = st.text_input("Suchen nach Name, Verein oder Altersklasse:", "")
 
@@ -135,7 +160,7 @@ try:
             
             st.divider()
             
-            # HIER GEÄNDERT: width='stretch'
+            # Alle Warnungen behoben: "width='stretch'" überall eingesetzt!
             st.dataframe(rank_df[['Kategorie', 'FirstName', 'LastName', 'Class', 'ClubName', 'Perf_String', 'isValid']], 
                          column_config={"isValid": "Gültige Leistungen", "Perf_String": "Details"}, 
                          width='stretch', hide_index=True)
@@ -149,7 +174,6 @@ try:
                 if search_query:
                     winners_df = winners_df[winners_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
                 
-                # HIER GEÄNDERT: width='stretch'
                 st.dataframe(winners_df[['Event', 'Class', 'FirstName', 'LastName', 'ClubName', 'Result']], 
                              width='stretch', hide_index=True)
                 csv_win = winners_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
@@ -165,17 +189,17 @@ try:
             
             if not plot_df.empty:
                 fig = px.box(plot_df, x="Class", y="Result_Num", color="Class", points="all", hover_data=["FirstName", "LastName"])
-                # HIER GEÄNDERT: width='stretch' (bzw. bei Plotly oft use_container_width noch akzeptiert, aber sicherheitshalber angepasst, falls Streamlit das global erzwingt, sonst entfernt plotly_chart das automatisch richtig)
-                # Anmerkung: st.plotly_chart nimmt in neueren Versionen den use_container_width Parameter weiterhin, 
-                # aber Streamlit konsolidiert das gerade. Zur absoluten Sicherheit bleibt es hier konform.
-                st.plotly_chart(fig, use_container_width=True) # Plotly behält nach aktueller Streamlit Doku oft use_container_width bei, aber für dataframes ist es 'width'. Wir ändern es dort wo die Warnung herkam: st.dataframe!
+                fig.update_layout(yaxis_title="Ergebnis (in Sekunden/Metern)")
+                # Warnung behoben: width="stretch" auch beim Plotly Chart
+                st.plotly_chart(fig, width="stretch")
+            else:
+                st.info("Keine auswertbaren Zahlen für diesen Bewerb vorhanden.")
 
         with tab_raw:
             raw_display = df_db
             if search_query:
                 raw_display = raw_display[raw_display.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
             
-            # HIER GEÄNDERT: width='stretch'
             st.dataframe(raw_display, width='stretch')
 
     else:
