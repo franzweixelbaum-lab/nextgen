@@ -122,11 +122,11 @@ def load_and_evaluate(df, klasse):
         if gewertete_bewerbe >= 8:
             ergebnisse.append({
                 'Verein': str(verein),
-                'Gesamtpunkte': gesamt_punkte,
-                'Gewertete Bewerbe': gewertete_bewerbe,
-                '1. Plätze': siege,
-                '2. Plätze': zweite,
-                '3. Plätze': dritte
+                'Gesamtpunkte': float(gesamt_punkte),
+                'Gewertete Bewerbe': int(gewertete_bewerbe),
+                '1. Plätze': int(siege),
+                '2. Plätze': int(zweite),
+                '3. Plätze': int(dritte)
             })
 
     # Dataframes für Ausgabe aufbereiten
@@ -170,23 +170,24 @@ if uploaded_file is not None:
         if df_ergebnis.empty:
             st.warning("Kein Verein in dieser Klasse hat die erforderlichen 8 gültigen und gewerteten Bewerbe erreicht.")
         else:
-            # Reines DataFrame ausgeben (ohne style.format, das die Abstürze bei Strings erzeugt)
+            # Reines DataFrame ausgeben
             st.dataframe(df_ergebnis, use_container_width=True)
 
             st.header("Details pro Verein")
             st.subheader("Qualifizierte Vereine (im Gesamtranking)")
             
             for verein in df_ergebnis['Verein'].tolist():
-                # Sicheres Auslesen der Punkte
+                
+                # Hier ist die Korrektur: .iloc stellt sicher, dass wir nur EINE konkrete Zahl bekommen
                 punkte_series = df_ergebnis.loc[df_ergebnis['Verein'] == verein, 'Gesamtpunkte']
-                punkte = punkte_series.values if not punkte_series.empty else 0
+                punkte = float(punkte_series.iloc) if not punkte_series.empty else 0.0
                 
                 with st.expander(f"🏅 {verein} — Gesamtpunkte: {punkte:.0f}"):
                     if verein in details_dict and details_dict[verein]:
                         df_det = pd.DataFrame(details_dict[verein])
                         df_det = df_det.sort_values(by=['Bewerbsgruppe', 'Punkte'], ascending=[True, False]).reset_index(drop=True)
                         st.table(df_det)
-                    
+                
             nicht_qualifiziert = [v for v in details_dict.keys() if v not in df_ergebnis['Verein'].tolist()]
             if nicht_qualifiziert:
                 st.write("---")
