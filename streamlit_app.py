@@ -44,7 +44,6 @@ def load_and_evaluate(df, klasse):
     df['Class'] = df['Class'].astype(str).str.strip()
 
     # 1. Daten filtern nach Klasse (WU16 oder MU16) und 'Außer Wertung' ausschließen
-    # Wir filtern sehr robust, falls 'NotCompetitive' als String oder Bool daherkommt
     is_competitive = ~df['NotCompetitive'].astype(str).str.strip().str.lower().isin(['true', '1', 't', 'ja', 'yes'])
     df_ak = df[(df['Class'] == klasse) & is_competitive].copy()
 
@@ -53,7 +52,7 @@ def load_and_evaluate(df, klasse):
     df_ak['Result'] = df_ak['Result'].astype(str).str.strip()
     df_ak = df_ak[~df_ak['Result'].isin(['ab.', 'ogV', 'aufg.', 'n.a.', 'disq.', ''])]
 
-    # ClassRank zu numerischem Wert konvertieren (Fehlerhafte Werte werden zu NaN -> dropna)
+    # ClassRank zu numerischem Wert konvertieren
     df_ak['ClassRank'] = pd.to_numeric(df_ak['ClassRank'], errors='coerce')
     df_ak = df_ak.dropna(subset=['ClassRank'])
 
@@ -88,7 +87,7 @@ def load_and_evaluate(df, klasse):
 
         for bg, bg_group in group.groupby('Bewerbsgruppe'):
             if bg == 'Unbekannt':
-                continue  # Unbekannte Bewerbe ignorieren
+                continue
             
             # Sortieren nach Punkten (absteigend)
             bg_group = bg_group.sort_values('Punkte', ascending=False)
@@ -113,12 +112,12 @@ def load_and_evaluate(df, klasse):
 
         details_pro_verein[verein] = detail_zeilen
 
-        # Tie-Breaker ermitteln (Anzahl der 1., 2., 3. Plätze)
+        # Tie-Breaker ermitteln
         siege = platzierungen.count(1)
         zweite = platzierungen.count(2)
         dritte = platzierungen.count(3)
 
-        # Ein Verein wird nur dann im Endergebnis gelistet, wenn er mind. 8 Bewerbe aufweist
+        # Ein Verein wird nur gelistet, wenn er mind. 8 Bewerbe aufweist
         if gewertete_bewerbe >= 8:
             ergebnisse.append({
                 'Verein': str(verein),
@@ -149,7 +148,6 @@ st.title("ÖLV U16 Vereinemeisterschaften - Auswertung")
 uploaded_file = st.file_uploader("Laden Sie hier die ATHMIN-Ergebnisdatei (CSV) hoch", type=["csv"])
 
 if uploaded_file is not None:
-    # Robuster Dateiupload (versucht UTF-8, fällt bei Windows-CSVs auf Latin-1 zurück)
     try:
         df_raw = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
     except UnicodeDecodeError:
@@ -170,17 +168,15 @@ if uploaded_file is not None:
         if df_ergebnis.empty:
             st.warning("Kein Verein in dieser Klasse hat die erforderlichen 8 gültigen und gewerteten Bewerbe erreicht.")
         else:
-            # Reines DataFrame ausgeben
             st.dataframe(df_ergebnis, use_container_width=True)
 
             st.header("Details pro Verein")
             st.subheader("Qualifizierte Vereine (im Gesamtranking)")
             
-            for verein in df_ergebnis['Verein'].tolist():
-                
-                # Hier ist die Korrektur: .iloc stellt sicher, dass wir nur EINE konkrete Zahl bekommen
-                punkte_series = df_ergebnis.loc[df_ergebnis['Verein'] == verein, 'Gesamtpunkte']
-                punkte = float(punkte_series.iloc) if not punkte_series.empty else 0.0
+            # KORREKTUR: Iteration direkt über die DataFrame-Reihen (row), vermeidet jegliches iloc/loc Problem
+            for idx, row in df_ergebnis.iterrows():
+                verein = row['Verein']
+                punkte = float(row['Gesamtpunkte'])
                 
                 with st.expander(f"🏅 {verein} — Gesamtpunkte: {punkte:.0f}"):
                     if verein in details_dict and details_dict[verein]:
