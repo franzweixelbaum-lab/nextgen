@@ -25,7 +25,6 @@ def get_competitor_name(row):
     if t == 'Athlete':
         return f"{row.get('FirstName', '')} {row.get('LastName', '')}".strip()
     else:
-        # Fallback für Staffeln
         if 'RelayName' in row and pd.notna(row['RelayName']) and str(row['RelayName']).strip() != "":
             return str(row['RelayName'])
         if 'TeamName' in row and pd.notna(row['TeamName']) and str(row['TeamName']).strip() != "":
@@ -41,7 +40,6 @@ def load_and_evaluate(df, klasse):
 
     df['Class'] = df['Class'].astype(str).str.strip()
 
-    # 1. Daten filtern (Wettbewerbsfähig, keine Abmeldungen/o.g.V.)
     is_competitive = ~df['NotCompetitive'].astype(str).str.strip().str.lower().isin(['true', '1', 't', 'ja', 'yes'])
     df_ak = df[(df['Class'] == klasse) & is_competitive].copy()
 
@@ -55,7 +53,6 @@ def load_and_evaluate(df, klasse):
     if df_ak.empty:
         return pd.DataFrame(), {}, pd.DataFrame()
 
-    # WICHTIG: Höchstpunktezahl = Gesamtanzahl der Vereine in dieser Klasse
     anzahl_vereine = df_ak['ClubName'].nunique()
 
     df_ak['Event'] = df_ak['Event'].astype(str).str.strip()
@@ -64,26 +61,15 @@ def load_and_evaluate(df, klasse):
 
     results_list = []
     
-    # 2. Auswertung pro Bewerb (Ermittlung des Vereins-Rangs und Punktevergabe)
     for event, event_df in df_ak.groupby('Event'):
-        
-        # Sortieren nach dem offiziellen Gesamtrang im Bewerb
         event_df = event_df.sort_values('ClassRank')
-        
-        # Den besten Athleten / die beste Staffel pro Verein extrahieren
         best_per_club = event_df.drop_duplicates(subset=['ClubName'], keep='first').copy()
         
-        # NEUE LOGIK FÜR GLEICHSTÄNDE: 
-        # Wir berechnen das Ranking der verbleibenden Vereine anhand ihres ClassRanks.
-        # "method='min'" sorgt dafür, dass Gleichstände denselben Platz bekommen und der
-        # darauffolgende den übersprungenen Platz annimmt (z.B. Platzierungen 1, 1, 3, 4, 4, 6...)
+        # Ex-aequo Platzierungen (Gleichstände) erhalten die vollen Punkte
         best_per_club['VereinsRang'] = best_per_club['ClassRank'].rank(method='min').astype(int)
-        
-        # Punkteberechnung: Höchstpunkte - VereinsRang + 1 (Minimum 0)
         best_per_club['Punkte_kalkuliert'] = anzahl_vereine - best_per_club['VereinsRang'] + 1
         best_per_club['Punkte_kalkuliert'] = best_per_club['Punkte_kalkuliert'].clip(lower=0)
         
-        # Mapping-Dictionaries erstellen, um sie gleich der Gesamtliste zuzuweisen
         club_points_map = best_per_club.set_index('ClubName')['Punkte_kalkuliert'].to_dict()
         club_rank_map = best_per_club.set_index('ClubName')['VereinsRang'].to_dict()
         
@@ -91,8 +77,6 @@ def load_and_evaluate(df, klasse):
         
         for _, row in event_df.iterrows():
             club = row['ClubName']
-            
-            # Prüfen, ob es der bestplatzierte Athlet des Vereins in diesem Bewerb ist
             is_best_in_event = club not in seen_clubs
             
             if is_best_in_event:
@@ -101,7 +85,7 @@ def load_and_evaluate(df, klasse):
                 vereins_rang = club_rank_map[club]
             else:
                 punkte = 0
-                vereins_rang = None # Zweitstarter erhalten keinen Vereinsrang
+                vereins_rang = None
                 
             results_list.append({
                 'Verein': str(club),
@@ -120,24 +104,21 @@ def load_and_evaluate(df, klasse):
     ergebnisse = []
     details_pro_verein = {}
 
-    # 3. Gruppenauswertung pro Verein nach Streichresultat-Regeln
     for verein, group in df_results.groupby('Verein'):
         gesamt_punkte = 0
         gewertete_bewerbe = 0
-        platzierungen = [] # Wird für den Tie-Breaker (Siege etc.) gesammelt
+        platzierungen = []
         verein_details = []
 
         for bg, bg_group in group.groupby('Bewerbsgruppe'):
             if bg == 'Unbekannt':
                 continue
             
-            # Nur die besten pro Bewerb dürfen in die Gruppenwertung einfließen
             best_in_events = bg_group[bg_group['IsBestInEvent'] == True].copy()
             best_in_events = best_in_events.sort_values('Punkte', ascending=False)
             
             other_in_events = bg_group[bg_group['IsBestInEvent'] == False].copy()
             
-            # Regel: Sprung & Stoß/Wurf max. 2 Ergebnisse, alle anderen max. 1 Ergebnis
             top_n = 2 if bg in ['Sprung', 'Stoß/Wurf'] else 1
             
             for i, row in enumerate(best_in_events.to_dict('records')):
@@ -145,11 +126,10 @@ def load_and_evaluate(df, klasse):
                     row['Status'] = '✅ Gewertet'
                     gesamt_punkte += row['Punkte']
                     gewertete_bewerbe += 1
-                    # Für den Tie-Breaker sammeln wir den VEREINSRANG ein (nicht den Gesamtrang)
                     platzierungen.append(row['Rang (Verein)'])
                 else:
                     row['Status'] = '❌ Streichresultat (Gruppen-Limit)'
-                    row['Punkte'] = 0 # Zählt nicht fürs Endergebnis
+                    row['Punkte'] = 0
                 verein_details.append(row)
                 
             for row in other_in_events.to_dict('records'):
@@ -158,12 +138,10 @@ def load_and_evaluate(df, klasse):
 
         details_pro_verein[verein] = verein_details
 
-        # Tie-Breaker aus den gesammelten Vereins-Rängen ermitteln
         siege = platzierungen.count(1)
         zweite = platzierungen.count(2)
         dritte = platzierungen.count(3)
 
-        # Ein Verein wird nur dann gewertet, wenn er mind. 8 gültige Bewerbe hat
         if gewertete_bewerbe >= 8:
             ergebnisse.append({
                 'Verein': verein,
@@ -174,7 +152,6 @@ def load_and_evaluate(df, klasse):
                 '3. Plätze': int(dritte)
             })
 
-    # Gesamtergebnis aufbereiten
     df_endergebnis = pd.DataFrame(ergebnisse)
     if not df_endergebnis.empty:
         df_endergebnis = df_endergebnis.sort_values(
@@ -184,7 +161,6 @@ def load_and_evaluate(df, klasse):
         df_endergebnis.index += 1
         df_endergebnis.index.name = 'Rang'
 
-    # Alle Details für das zweite Register zusammenführen
     df_all_details = pd.DataFrame([item for sublist in details_pro_verein.values() for item in sublist])
     if not df_all_details.empty:
         df_all_details = df_all_details.drop(columns=['IsBestInEvent'])
@@ -194,6 +170,14 @@ def load_and_evaluate(df, klasse):
 # --- Streamlit UI ---
 st.set_page_config(page_title="ÖLV U16 Vereinemeisterschaft", layout="wide")
 st.title("ÖLV U16 Vereinemeisterschaften - Auswertung")
+
+# --- INITIALISIERUNG SESSION STATE (Löst das Refresh-Problem) ---
+if 'berechnet' not in st.session_state:
+    st.session_state.berechnet = False
+if 'aktuelle_klasse' not in st.session_state:
+    st.session_state.aktuelle_klasse = "WU16"
+if 'selected_event' not in st.session_state:
+    st.session_state.selected_event = "Alle"
 
 uploaded_file = st.file_uploader("Laden Sie hier die ATHMIN-Ergebnisdatei (CSV) hoch", type=["csv"])
 
@@ -209,11 +193,21 @@ if uploaded_file is not None:
 
     klasse = st.selectbox("Wähle die Altersklasse zur Auswertung:", ["WU16", "MU16"])
 
+    # Wenn die Klasse gewechselt wird, setzen wir den Filter zurück
+    if klasse != st.session_state.aktuelle_klasse:
+        st.session_state.aktuelle_klasse = klasse
+        st.session_state.selected_event = "Alle"
+        st.session_state.berechnet = False
+
     if st.button("Ergebnis Berechnen", type="primary"):
-        with st.spinner("Berechne Ergebnisse..."):
+        st.session_state.berechnet = True  # Status speichern, damit es beim Filtern nicht verschwindet
+
+    # Die Auswertung bleibt sichtbar, solange st.session_state.berechnet == True ist
+    if st.session_state.berechnet:
+        with st.spinner("Lade Daten..."):
             df_ergebnis, details_dict, df_all_details = load_and_evaluate(df_raw, klasse)
 
-        tab1, tab2 = st.tabs(["🏆 Gesamtwertung & Vereinsdetails", "📋 Alle Einzelergebnisse (Filterbar)"])
+        tab1, tab2 = st.tabs(["🏆 Gesamtwertung & Vereinsdetails", "📋 Alle Einzelergebnisse (Gefiltert)"])
 
         # --- TAB 1: Übersicht & Gesamtwertung ---
         with tab1:
@@ -251,26 +245,35 @@ if uploaded_file is not None:
                             df_det = df_det.sort_values(by=['Bewerbsgruppe', 'Status', 'Punkte'], ascending=[True, False, False]).reset_index(drop=True)
                             st.dataframe(df_det, use_container_width=True)
 
-        # --- TAB 2: Register mit allen Einzelergebnissen und Filter ---
+        # --- TAB 2: Register mit allen Einzelergebnissen und BUTTON-FILTER ---
         with tab2:
             st.header(f"Einzelergebnisse & Punktevergabe ({klasse})")
             
             if not df_all_details.empty:
-                verfuegbare_bewerbe = sorted(df_all_details['Bewerb'].unique())
+                verfuegbare_bewerbe = ["Alle"] + sorted(df_all_details['Bewerb'].unique())
                 
-                auswahl = st.multiselect(
-                    "Wählen Sie einen oder mehrere Bewerbe zur Filterung aus (leer lassen für alle Ergebnisse):",
-                    options=verfuegbare_bewerbe,
-                    default=[]
-                )
+                # Sicherheitscheck: Falls durch Klassenwechsel ein falscher Bewerb im Speicher hängt
+                if st.session_state.selected_event not in verfuegbare_bewerbe:
+                    st.session_state.selected_event = "Alle"
                 
+                st.markdown("**Bewerb auswählen:**")
+                
+                # Buttons dynamisch in Spalten (max. 8 pro Zeile) rendern
+                cols_per_row = 8
+                for i in range(0, len(verfuegbare_bewerbe), cols_per_row):
+                    cols = st.columns(cols_per_row)
+                    for j, bew in enumerate(verfuegbare_bewerbe[i:i+cols_per_row]):
+                        # Aktiver Button wird als "primary" (blau) hervorgehoben
+                        btn_type = "primary" if st.session_state.selected_event == bew else "secondary"
+                        if cols[j].button(bew, type=btn_type, key=f"btn_{klasse}_{bew}", use_container_width=True):
+                            st.session_state.selected_event = bew
+                            st.rerun() # UI sofort aktualisieren
+                
+                # Filtern der Tabelle auf Basis des Buttons
                 df_filtered = df_all_details.copy()
-                if auswahl:
-                    df_filtered = df_filtered[df_filtered['Bewerb'].isin(auswahl)]
+                if st.session_state.selected_event != "Alle":
+                    df_filtered = df_filtered[df_filtered['Bewerb'] == st.session_state.selected_event]
                 
-                # Sortierung für perfekte Übersichtlichkeit der ex-aequo Platzierungen: 
-                # Zuerst nach Bewerb, dann aufsteigend nach dem bereinigten Vereins-Rang (damit ex-aequo Ränge untereinander stehen)
-                # "-" Ränge (Streichresultate) werden nach unten sortiert
                 df_filtered['SortRank'] = pd.to_numeric(df_filtered['Rang (Verein)'], errors='coerce').fillna(999)
                 df_filtered = df_filtered.sort_values(
                     by=['Bewerb', 'SortRank', 'Rang (Gesamt)'], 
