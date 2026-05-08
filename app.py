@@ -1,8 +1,3 @@
-Das lässt sich in Streamlit sehr einfach mit dem Widget `st.file_uploader` umsetzen. Dadurch erscheint auf der Webseite ein Feld, in das Sie die CSV-Datei einfach per Drag-and-Drop hineinziehen oder über einen Dialog auswählen können.
-
-Hier ist der angepasste Code für Ihre `app.py`. Ersetzen Sie den vorherigen Code vollständig hiermit:
-
-```python
 import streamlit as st
 import pandas as pd
 
