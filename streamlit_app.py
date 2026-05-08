@@ -55,7 +55,7 @@ def load_and_evaluate(df, klasse):
     if df_ak.empty:
         return pd.DataFrame(), {}, pd.DataFrame()
 
-    # Anzahl der Vereine in dieser Klasse ermitteln
+    # WICHTIG: Höchstpunktezahl = Gesamtanzahl der Vereine in dieser Klasse (unabhängig von der Teilnehmerzahl pro Bewerb)
     anzahl_vereine = df_ak['ClubName'].nunique()
 
     df_ak['Event'] = df_ak['Event'].astype(str).str.strip()
@@ -68,13 +68,15 @@ def load_and_evaluate(df, klasse):
     for event, event_df in df_ak.groupby('Event'):
         event_df = event_df.sort_values('ClassRank')
         seen_clubs = set()
-        club_rank = 1
+        club_rank = 1 # Internes Ranking der Vereine in diesem spezifischen Bewerb
         
         for _, row in event_df.iterrows():
             club = row['ClubName']
+            
             # Nur der bestplatzierte Athlet pro Verein erhält Punkte
             if club not in seen_clubs:
                 seen_clubs.add(club)
+                # Berechnung: Sieger erhält 'anzahl_vereine', danach absteigend
                 punkte = max(0, anzahl_vereine - club_rank + 1)
                 club_rank += 1
                 is_best_in_event = True
@@ -85,7 +87,7 @@ def load_and_evaluate(df, klasse):
             results_list.append({
                 'Verein': str(club),
                 'Bewerbsgruppe': row['Bewerbsgruppe'],
-                'Bewerb (Code)': row['Event'],
+                'Bewerb': row['Event'],
                 'Athlet/Staffel': row['Name'],
                 'Leistung': row['Result'],
                 'Rang': int(row['ClassRank']),
@@ -98,7 +100,7 @@ def load_and_evaluate(df, klasse):
     ergebnisse = []
     details_pro_verein = {}
 
-    # Gruppenauswertung pro Verein
+    # Gruppenauswertung pro Verein nach Streichresultat-Regeln
     for verein, group in df_results.groupby('Verein'):
         gesamt_punkte = 0
         gewertete_bewerbe = 0
@@ -135,11 +137,12 @@ def load_and_evaluate(df, klasse):
 
         details_pro_verein[verein] = verein_details
 
-        # Tie-Breaker
+        # Tie-Breaker bei Punktegleichstand
         siege = platzierungen.count(1)
         zweite = platzierungen.count(2)
         dritte = platzierungen.count(3)
 
+        # Ein Verein wird nur dann gewertet, wenn er mind. 8 gültige Bewerbe hat
         if gewertete_bewerbe >= 8:
             ergebnisse.append({
                 'Verein': verein,
@@ -190,7 +193,7 @@ if uploaded_file is not None:
             df_ergebnis, details_dict, df_all_details = load_and_evaluate(df_raw, klasse)
 
         # Tabs (Register) für die Ansicht erstellen
-        tab1, tab2 = st.tabs(["🏆 Gesamtwertung & Vereinsdetails", "📋 Alle Einzelergebnisse"])
+        tab1, tab2 = st.tabs(["🏆 Gesamtwertung & Vereinsdetails", "📋 Alle Einzelergebnisse (Filterbar)"])
 
         # --- TAB 1: Übersicht & Gesamtwertung ---
         with tab1:
@@ -202,7 +205,7 @@ if uploaded_file is not None:
                 st.dataframe(df_ergebnis, use_container_width=True)
 
                 st.markdown("### Details pro Verein")
-                st.info("In den Details sind nun **alle Athleten** sichtbar. Gewertete Leistungen sind mit ✅ markiert, Streichresultate mit ❌.")
+                st.info("Gewertete Leistungen sind mit ✅ markiert, Streichresultate mit ❌.")
                 
                 # Qualifizierte Vereine (mit >= 8 Bewerben)
                 for idx, row in df_ergebnis.iterrows():
@@ -212,9 +215,7 @@ if uploaded_file is not None:
                     with st.expander(f"🏅 {verein} — Gesamtpunkte: {punkte:.0f}"):
                         if verein in details_dict and details_dict[verein]:
                             df_det = pd.DataFrame(details_dict[verein])
-                            # Drop the internal sorting column
                             df_det = df_det.drop(columns=['IsBestInEvent'], errors='ignore')
-                            # Sortieren nach Gruppe und Status (Gewertete oben)
                             df_det = df_det.sort_values(by=['Bewerbsgruppe', 'Status', 'Punkte'], ascending=[True, False, False]).reset_index(drop=True)
                             st.dataframe(df_det, use_container_width=True)
                     
@@ -224,7 +225,6 @@ if uploaded_file is not None:
                     st.write("---")
                     st.subheader("Außerhalb der Wertung (< 8 gewertete Bewerbe)")
                     for verein in nicht_qualifiziert:
-                        # Berechne die Anzahl der "Gewerteten" Bewerbe
                         df_det = pd.DataFrame(details_dict[verein])
                         anz_gewertet = len(df_det[df_det['Status'] == '✅ Gewertet'])
                         
@@ -233,13 +233,33 @@ if uploaded_file is not None:
                             df_det = df_det.sort_values(by=['Bewerbsgruppe', 'Status', 'Punkte'], ascending=[True, False, False]).reset_index(drop=True)
                             st.dataframe(df_det, use_container_width=True)
 
-        # --- TAB 2: Register mit allen Einzelergebnissen ---
+        # --- TAB 2: Register mit allen Einzelergebnissen und Filter ---
         with tab2:
-            st.header(f"Alle erfassten Athleten und Punktzuweisungen ({klasse})")
+            st.header(f"Einzelergebnisse & Punktevergabe ({klasse})")
+            
             if not df_all_details.empty:
-                # Wir sortieren die Gesamttabelle alphabetisch nach Verein und dann nach Punkten
-                df_all_details = df_all_details.sort_values(by=['Verein', 'Bewerbsgruppe', 'Status'], ascending=[True, True, False]).reset_index(drop=True)
-                st.dataframe(df_all_details, use_container_width=True)
+                # Dynamischer Filter (Dropdown) für die Auswahl der Bewerbe
+                verfuegbare_bewerbe = sorted(df_all_details['Bewerb'].unique())
+                
+                auswahl = st.multiselect(
+                    "Wählen Sie einen oder mehrere Bewerbe zur Filterung aus (leer lassen für alle Ergebnisse):",
+                    options=verfuegbare_bewerbe,
+                    default=[]
+                )
+                
+                # DataFrame basierend auf der Auswahl filtern
+                df_filtered = df_all_details.copy()
+                if auswahl:
+                    df_filtered = df_filtered[df_filtered['Bewerb'].isin(auswahl)]
+                
+                # Sortierung für bessere Lesbarkeit: Erst nach Bewerb, dann absteigend nach Punkten
+                df_filtered = df_filtered.sort_values(
+                    by=['Bewerb', 'Punkte', 'Status', 'Verein'], 
+                    ascending=[True, False, False, True]
+                ).reset_index(drop=True)
+                
+                # Darstellung des gefilterten Ergebnisses
+                st.dataframe(df_filtered, use_container_width=True)
             else:
                 st.info("Keine auswertbaren Leistungsdaten gefunden.")
 else:
