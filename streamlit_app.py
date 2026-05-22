@@ -88,14 +88,30 @@ def load_and_clean_data(file):
         col_map = {
             'Vorname': 'FirstName',
             'Nachname': 'LastName',
+            'Name': 'LastName',        # Fallback für manche Systeme
             'Verein': 'ClubName',
             'Jahrgang': 'Yob',
             'JG': 'Yob',
+            'Jg.': 'Yob',              # Oft in Nennlisten verwendet
+            'Jg': 'Yob',
             'Klasse': 'Class',
+            'AK': 'Class',             # Altersklasse
             'Bewerb': 'Event',
-            'Geschlecht': 'Gender'
+            'Disziplin': 'Event',
+            'Geschlecht': 'Gender',
+            'm/w': 'Gender'
         }
         df = df.rename(columns=col_map)
+        
+        # Sicherheitsnetz: Fehlt eine der Pflicht-Spalten, wird sie leer angelegt
+        mandatory_cols = ['FirstName', 'LastName', 'Yob', 'ClubName', 'Class', 'Event', 'Gender']
+        for col in mandatory_cols:
+            if col not in df.columns:
+                df[col] = ''
+                
+        # Leere Werte (NaN) in Gruppierungsfeldern durch Strings ersetzen, 
+        # damit 'groupby' diese Zeilen nicht verschluckt oder abstürzt
+        df[['FirstName', 'LastName', 'Yob']] = df[['FirstName', 'LastName', 'Yob']].fillna('')
         
         if 'Result' in df.columns:
             df['Result_Num'] = df['Result'].apply(parse_result_to_number)
