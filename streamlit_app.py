@@ -83,25 +83,47 @@ def load_and_clean_data(file):
             file.seek(0)
             df = pd.read_csv(file, sep=',', encoding='latin1')
 
-        # Spaltennamen bereinigen und übersetzen (für Athmin/Nennungen)
+        # Spaltennamen bereinigen
         df.columns = [str(c).strip() for c in df.columns]
+        
+        # Mapping komplett in Großbuchstaben für eine robuste, case-insensitive Zuordnung
         col_map = {
-            'Vorname': 'FirstName',
-            'Nachname': 'LastName',
-            'Name': 'LastName',        # Fallback für manche Systeme
-            'Verein': 'ClubName',
-            'Jahrgang': 'Yob',
+            'VORNAME': 'FirstName',
+            'NACHNAME': 'LastName',
+            'NAME': 'LastName',        
+            'VEREIN': 'ClubName',
+            'JAHRGANG': 'Yob',
             'JG': 'Yob',
-            'Jg.': 'Yob',              # Oft in Nennlisten verwendet
-            'Jg': 'Yob',
-            'Klasse': 'Class',
-            'AK': 'Class',             # Altersklasse
-            'Bewerb': 'Event',
-            'Disziplin': 'Event',
-            'Geschlecht': 'Gender',
-            'm/w': 'Gender'
+            'JG.': 'Yob',
+            'YOB': 'Yob',
+            'KLASSE': 'Class',
+            'AK': 'Class',             
+            'BEWERB': 'Event',
+            'DISZIPLIN': 'Event',
+            'GESCHLECHT': 'Gender',
+            'M/W': 'Gender'
         }
-        df = df.rename(columns=col_map)
+        df.columns = [col_map.get(col.upper(), col) for col in df.columns]
+
+        # --- NEUER FIX ---
+        # Alle Spalten, die unser Code später braucht, genau auf diese Schreibweise zwingen
+        system_cols = ['FirstName', 'LastName', 'Yob', 'ClubName', 'Class', 'Event', 'Gender', 
+                       'Result', 'Result_Num', 'isValid', 'CupPoints', 'PB', 'PB_Num', 'SB', 'SB_Num']
+        
+        new_cols = []
+        for c in df.columns:
+            matched = False
+            for sys_col in system_cols:
+                if str(c).lower() == sys_col.lower():
+                    new_cols.append(sys_col)
+                    matched = True
+                    break
+            if not matched:
+                new_cols.append(c)
+        df.columns = new_cols
+
+        # Lösche tatsächliche Duplikate heraus, um den SQLite Fehler zu verhindern
+        df = df.loc[:, ~df.columns.str.lower().duplicated(keep='first')].copy()
         
         # Sicherheitsnetz: Fehlt eine der Pflicht-Spalten, wird sie leer angelegt
         mandatory_cols = ['FirstName', 'LastName', 'Yob', 'ClubName', 'Class', 'Event', 'Gender']
@@ -109,8 +131,7 @@ def load_and_clean_data(file):
             if col not in df.columns:
                 df[col] = ''
                 
-        # Leere Werte (NaN) in Gruppierungsfeldern durch Strings ersetzen, 
-        # damit 'groupby' diese Zeilen nicht verschluckt oder abstürzt
+        # Leere Werte (NaN) in Gruppierungsfeldern durch Strings ersetzen
         df[['FirstName', 'LastName', 'Yob']] = df[['FirstName', 'LastName', 'Yob']].fillna('')
         
         if 'Result' in df.columns:
@@ -130,7 +151,7 @@ def load_and_clean_data(file):
     except Exception as e:
         st.error(f"Fehler beim Einlesen: {e}")
         return None
-
+        
 # --- DATEN AUSWERTUNGEN ---
 def get_cup_ranking(df):
     if df.empty or 'isValid' not in df.columns: return pd.DataFrame()
