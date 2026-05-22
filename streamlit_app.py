@@ -73,7 +73,7 @@ def is_valid_result(res):
     return any(char.isdigit() for char in str(res))
 
 def parse_result_to_number(val):
-    if pd.isna(val): return np.nan
+    if pd.isna(val) or str(val).strip() == '': return np.nan
     val_str = str(val).strip().replace(',', '.')
     if ':' in val_str:
         parts = val_str.split(':')
@@ -95,10 +95,22 @@ def load_and_clean_data(file):
             file.seek(0)
             df = pd.read_csv(file, sep=',', encoding='latin1')
         
+        # Absicherung für Dateien ohne Ergebnisse (Nennungen)
         if 'Result' in df.columns:
             df['Result_Num'] = df['Result'].apply(parse_result_to_number)
             df['isValid'] = df['Result'].apply(is_valid_result)
             df['CupPoints'] = df.apply(calculate_cup_points, axis=1)
+        else:
+            df['Result'] = None
+            df['Result_Num'] = np.nan
+            df['isValid'] = False
+            df['CupPoints'] = 0
+
+        # PB und SB parsen, falls vorhanden (für Favoritenliste)
+        if 'PB' in df.columns:
+            df['PB_Num'] = df['PB'].apply(parse_result_to_number)
+        if 'SB' in df.columns:
+            df['SB_Num'] = df['SB'].apply(parse_result_to_number)
             
         return df
     except Exception as e:
@@ -110,6 +122,8 @@ def get_cup_ranking(df):
     target_classes = ['U10', 'U12', 'U14']
     df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
     valid_df = df_filtered[df_filtered['isValid'] == True]
+    
+    if valid_df.empty: return pd.DataFrame()
     
     ranking = valid_df.groupby(['FirstName', 'LastName', 'Yob']).agg({
         'ClubName': 'first', 'Class': 'first', 'Gender': 'first',
@@ -158,6 +172,64 @@ def get_winners_list(df):
         
     return pd.DataFrame(winners).sort_values(['Event', 'Class']) if winners else pd.DataFrame()
 
+# --- NEUE FUNKTIONEN: VORSCHAU & FAVORITEN ---
+def get_entry_medal_preview(df):
+    """Berechnet die voraussichtlichen Medaillen anhand der bloßen Nennungen."""
+    target_classes = ['U10', 'U12', 'U14']
+    df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
+    
+    ranking = df_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg({
+        'ClubName': 'first', 'Class': 'first',
+        'Event': lambda x: ', '.join(x.astype(str)),
+        'FirstName': 'count' # Zählt die Anzahl der Nennungen (Zeilen)
+    }).rename(columns={'FirstName': 'Nennungen'}).reset_index()
+
+    def categorize_preview(count):
+        if count >= 3: return "🥇 Vorauss. Gold (3+ Nennungen)"
+        elif count == 2: return "🥈 Vorauss. Silber (2 Nennungen)"
+        elif count == 1: return "🥉 Vorauss. Bronze (1 Nennung)"
+        return "Keine"
+
+    ranking['Vorschau'] = ranking['Nennungen'].apply(categorize_preview)
+    cat_order = {"🥇 Vorauss. Gold (3+ Nennungen)": 0, "🥈 Vorauss. Silber (2 Nennungen)": 1, "🥉 Vorauss. Bronze (1 Nennung)": 2, "Keine": 3}
+    ranking['Sort'] = ranking['Vorschau'].map(cat_order)
+    return ranking.sort_values(['Sort', 'LastName']).drop(columns=['Sort'])
+
+def get_favorites_list(df):
+    """Erstellt eine Favoritenliste (Top 3) pro Bewerb und Klasse anhand von PB oder SB."""
+    df_fav = df.copy()
+    
+    has_pb = 'PB_Num' in df_fav.columns
+    has_sb = 'SB_Num' in df_fav.columns
+    
+    if not has_pb and not has_sb:
+        return pd.DataFrame() # Keine Bestleistungen vorhanden
+        
+    # Konsolidiere Sort_Mark (PB wird bevorzugt, SB als Fallback)
+    if has_pb and has_sb:
+        df_fav['Sort_Mark'] = df_fav['PB_Num'].fillna(df_fav['SB_Num'])
+        df_fav['Mark_String'] = df_fav['PB'].fillna(df_fav['SB'])
+    elif has_pb:
+        df_fav['Sort_Mark'] = df_fav['PB_Num']
+        df_fav['Mark_String'] = df_fav['PB']
+    else:
+        df_fav['Sort_Mark'] = df_fav['SB_Num']
+        df_fav['Mark_String'] = df_fav['SB']
+        
+    df_fav = df_fav.dropna(subset=['Sort_Mark'])
+    if df_fav.empty: return pd.DataFrame()
+
+    time_events = ['M', 'H', '100', '200', '400', '600', '800', '1K', '2K', '3K']
+    favorites = []
+    
+    for (event, age_class), group in df_fav.groupby(['Event', 'Class']):
+        is_time = any(t in str(event).upper() for t in time_events)
+        sorted_group = group.sort_values('Sort_Mark', ascending=is_time)
+        favorites.append(sorted_group.head(3))
+        
+    return pd.concat(favorites).reset_index(drop=True) if favorites else pd.DataFrame()
+
+
 # --- DASHBOARD UI ---
 st.title("🏆 Moderne Leichtathletik-Auswertung")
 
@@ -183,23 +255,52 @@ try:
         st.subheader("🔍 Globale Suche")
         search_query = st.text_input("Suchen nach Name, Verein oder Altersklasse:", "")
 
-        tab_cup, tab_rank, tab_win, tab_plot, tab_raw = st.tabs([
-            "📊 Punkte-Cup", "🏅 Teilnahmen-Medaillen", "🥇 Einzel-Sieger", "📈 Grafiken", "📋 Rohdaten"
+        # Tabs erweitert um "Vorschau & Favoriten"
+        tab_preview, tab_cup, tab_rank, tab_win, tab_plot, tab_raw = st.tabs([
+            "🔮 Vorschau & Favoriten", "📊 Punkte-Cup", "🏅 Teilnahmen-Medaillen", "🥇 Einzel-Sieger", "📈 Grafiken", "📋 Rohdaten"
         ])
+        
+        with tab_preview:
+            st.info("Dieser Bereich dient als Vorschau auf Basis der Nennungen (Meldelisten), bevor Ergebnisse eingetragen wurden.")
+            c1, c2 = st.columns(2)
+            
+            with c1:
+                st.subheader("Medaillen-Vorschau (nach Nennungen)")
+                preview_df = get_entry_medal_preview(df_db)
+                if search_query:
+                    preview_df = preview_df[preview_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+                st.dataframe(preview_df[['Vorschau', 'FirstName', 'LastName', 'Class', 'ClubName', 'Nennungen', 'Event']], 
+                             column_config={"Nennungen": "Anzahl", "Event": "Gemeldete Bewerbe"}, 
+                             width='stretch', hide_index=True)
+                             
+            with c2:
+                st.subheader("Favoriten (Top 3 nach PB/SB)")
+                fav_df = get_favorites_list(df_db)
+                if not fav_df.empty:
+                    if search_query:
+                        fav_df = fav_df[fav_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+                    st.dataframe(fav_df[['Event', 'Class', 'FirstName', 'LastName', 'ClubName', 'Mark_String']],
+                                 column_config={"Mark_String": "PB/SB"},
+                                 width='stretch', hide_index=True)
+                else:
+                    st.warning("Keine PB oder SB Spalten in der CSV gefunden, oder keine Zeiten hinterlegt.")
 
         with tab_cup:
             st.info("Das Punkte-System gewichtet Lauf, Sprung und Wurf altersgerecht für einen fairen Mehrkampf.")
             cup_df = get_cup_ranking(df_db)
             
-            if search_query:
-                cup_df = cup_df[cup_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+            if not cup_df.empty:
+                if search_query:
+                    cup_df = cup_df[cup_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+                    
+                st.dataframe(cup_df[['Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'isValid', 'Event']], 
+                             column_config={"CupPoints": "Gesamtpunkte", "isValid": "Bewerbe (Anzahl)", "Event": "Absolviert"},
+                             width='stretch', hide_index=True)
                 
-            st.dataframe(cup_df[['Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'isValid', 'Event']], 
-                         column_config={"CupPoints": "Gesamtpunkte", "isValid": "Bewerbe (Anzahl)", "Event": "Absolviert"},
-                         width='stretch', hide_index=True)
-            
-            csv_cup = cup_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 Cup-Wertung herunterladen", csv_cup, "cup_wertung.csv", "text/csv")
+                csv_cup = cup_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button("📥 Cup-Wertung herunterladen", csv_cup, "cup_wertung.csv", "text/csv")
+            else:
+                st.warning("Noch keine gültigen Ergebnisse für die Cup-Wertung vorhanden.")
 
         with tab_rank:
             rank_df = get_medal_ranking(df_db)
@@ -228,17 +329,22 @@ try:
                              width='stretch', hide_index=True)
                 csv_win = winners_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button("📥 Siegerliste herunterladen", csv_win, "siegerliste.csv", "text/csv")
+            else:
+                st.warning("Noch keine Sieger ermittelbar (fehlende Ergebnisse).")
 
         with tab_plot:
-            sel_event = st.selectbox("Bewerb für Grafik wählen:", sorted(df_db['Event'].unique()))
-            plot_df = df_db[df_db['Event'] == sel_event].dropna(subset=['Result_Num'])
-            if search_query:
-                plot_df = plot_df[plot_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-            
-            if not plot_df.empty:
-                fig = px.box(plot_df, x="Class", y="Result_Num", color="Class", points="all", hover_data=["FirstName", "LastName", "CupPoints"])
-                fig.update_layout(yaxis_title="Ergebnis")
-                st.plotly_chart(fig, width="stretch")
+            if not df_db[df_db['isValid'] == True].empty:
+                sel_event = st.selectbox("Bewerb für Grafik wählen:", sorted(df_db[df_db['isValid'] == True]['Event'].unique()))
+                plot_df = df_db[df_db['Event'] == sel_event].dropna(subset=['Result_Num'])
+                if search_query:
+                    plot_df = plot_df[plot_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+                
+                if not plot_df.empty:
+                    fig = px.box(plot_df, x="Class", y="Result_Num", color="Class", points="all", hover_data=["FirstName", "LastName", "CupPoints"])
+                    fig.update_layout(yaxis_title="Ergebnis")
+                    st.plotly_chart(fig, width="stretch")
+            else:
+                st.warning("Grafiken sind erst nach Eintragung von Ergebnissen verfügbar.")
 
         with tab_raw:
             raw_display = df_db
