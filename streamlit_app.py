@@ -120,21 +120,19 @@ def get_cup_ranking(df):
     
     for (fname, lname, yob, club, gender, a_class), group in valid_df.groupby(['FirstName', 'LastName', 'Yob', 'ClubName', 'Gender', 'Class']):
         
-        # Sortiere alle Leistungen nach Punkten (absteigend)
         sorted_res = group.sort_values('CupPoints', ascending=False)
-        
         unique_events = sorted_res['Event'].unique()
         total_starts = len(sorted_res)
         
         # QUALIFIKATIONS-REGELN (6 Starts, 5 Disziplinen)
         is_qualified = (total_starts >= 6) and (len(unique_events) >= 5)
-        status = "✅ Qualifiziert" if is_qualified else "❌ Zu wenige Starts/Disziplinen"
-        status_sort = 0 if is_qualified else 1 # Qualifizierte nach oben
+        status = "✅ Qualifiziert" if is_qualified else "❌ Nicht qualif."
+        status_sort = 0 if is_qualified else 1 
         
         counted_idx = []
         seen_events = set()
         
-        # Regel 1: Die besten 5 Leistungen aus 5 UNTERSCHIEDLICHEN Disziplinen
+        # Regel 1: 5 unterschiedliche Disziplinen
         for idx, row in sorted_res.iterrows():
             if row['Event'] not in seen_events and len(seen_events) < 5:
                 seen_events.add(row['Event'])
@@ -146,32 +144,50 @@ def get_cup_ranking(df):
                 counted_idx.append(idx)
                 break
                 
-        # Zusammenfassung
+        # Zusammenfassung Punkte
         total_points = sorted_res.loc[counted_idx, 'CupPoints'].sum()
         
+        # Fortschritts-Anzeige (x/6)
+        progress = f"{len(counted_idx)}/6"
+        
+        # Fehlende Bedingungen ermitteln
+        missing_starts = max(0, 6 - total_starts)
+        missing_unique = max(0, 5 - len(unique_events))
+        
+        fehlend = []
+        if missing_starts > 0:
+            fehlend.append(f"{missing_starts} Start(s)")
+        if missing_unique > 0:
+            fehlend.append(f"{missing_unique} Disziplin(en)")
+            
+        fehlend_str = "✅" if is_qualified else " & ".join(fehlend)
+        
+        # Leistungsdetails mit Zeilenumbruch (\n) und Fettdruck (**)
         details = []
         for idx, row in sorted_res.iterrows():
-            star = " ⭐" if idx in counted_idx else ""
-            details.append(f"{row['Event']} ({row['Result']} -> {int(row['CupPoints'])}){star}")
+            if idx in counted_idx:
+                details.append(f"**{row['Event']} ({row['Result']} -> {int(row['CupPoints'])} Pkt) ⭐**")
+            else:
+                details.append(f"{row['Event']} ({row['Result']} -> {int(row['CupPoints'])} Pkt)")
             
         rankings.append({
             'Status': status,
-            'FirstName': fname,
-            'LastName': lname,
+            'Fortschritt': progress,
+            'Fehlend': fehlend_str,
             'Class': a_class,
             'Gender': gender,
+            'FirstName': fname,
+            'LastName': lname,
             'ClubName': club,
             'CupPoints': int(total_points),
-            'EventDetails': ', '.join(details),
-            'Starts': total_starts,
-            'Disziplinen': len(unique_events),
+            'EventDetails': '\n'.join(details), # Zeilenumbruch für bessere Lesbarkeit
             '_status_sort': status_sort
         })
         
     ranking_df = pd.DataFrame(rankings)
     if not ranking_df.empty:
-        # Sortiere: Zuerst Qualifizierte, dann nach Klasse, Geschlecht, und Punkten absteigend
-        return ranking_df.sort_values(['Class', 'Gender', '_status_sort', 'CupPoints'], ascending=[True, True, True, False]).drop(columns=['_status_sort'])
+        # Zuerst nach Qualifikation, dann Klasse, Geschlecht, und Punkte
+        return ranking_df.sort_values(['_status_sort', 'Class', 'Gender', 'CupPoints'], ascending=[True, True, True, False]).drop(columns=['_status_sort'])
     return pd.DataFrame()
 
 def get_medal_ranking(df):
@@ -242,7 +258,7 @@ try:
         ])
 
         with tab_cup:
-            st.info("Regeln: 6 gewertete Starts aus mind. 5 unterschiedlichen Disziplinen. Gewertete Leistungen sind mit ⭐ markiert.")
+            st.info("Regeln: 6 gewertete Starts aus mind. 5 unterschiedlichen Disziplinen. Gewertete Leistungen sind in den Details markiert.")
             
             cup_df = get_cup_ranking(df_db)
             
@@ -250,11 +266,13 @@ try:
                 cup_df = cup_df[cup_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
                 
             if not cup_df.empty:
-                st.dataframe(cup_df[['Status', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], 
+                st.dataframe(cup_df[['Status', 'Fortschritt', 'Fehlend', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], 
                              column_config={
                                  "Status": st.column_config.TextColumn("Qualifikation"),
+                                 "Fortschritt": st.column_config.TextColumn("Starts"),
+                                 "Fehlend": st.column_config.TextColumn("Es fehlen..."),
                                  "CupPoints": "Punkte (Best 6)",
-                                 "EventDetails": "Leistungs-Details (⭐ = in Wertung)"
+                                 "EventDetails": st.column_config.TextColumn("Leistungs-Details (⭐ = in Wertung)", width="large")
                              },
                              width='stretch', hide_index=True)
                 
