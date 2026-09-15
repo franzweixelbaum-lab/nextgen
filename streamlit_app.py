@@ -12,18 +12,18 @@ def get_connection():
 
 conn = get_connection()
 
-# --- CUP-PUNKTESYSTEM ---
+# --- CUP-PUNKTESYSTEM (Ausdauer Fair Kalibriert!) ---
 CUP_PARAMS = {
     # --- MÄNNLICH ---
     'M_60M':  {'Typ': 'Lauf',   'a': 45.0,   'b': 12.5,  'c': 1.81},
     'M_10H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 25.0,  'c': 1.81}, 
     'M_20H':  {'Typ': 'Lauf',   'a': 3.5,    'b': 45.0,  'c': 1.81},
     'M_400':  {'Typ': 'Lauf',   'a': 0.25,   'b': 130.0, 'c': 1.85},
-    'M_600':  {'Typ': 'Lauf',   'a': 0.06,   'b': 250.0, 'c': 1.85},
+    'M_600':  {'Typ': 'Lauf',   'a': 0.07,   'b': 250.0, 'c': 1.85},  # Erhöht
     'M_800':  {'Typ': 'Lauf',   'a': 0.1,    'b': 240.0, 'c': 1.85}, 
-    'M_1K0':  {'Typ': 'Lauf',   'a': 0.08,   'b': 300.0, 'c': 1.85}, 
-    'M_1KSC': {'Typ': 'Lauf',   'a': 0.08,   'b': 300.0, 'c': 1.85},
-    'M_1K5':  {'Typ': 'Lauf',   'a': 0.04,   'b': 480.0, 'c': 1.85},
+    'M_1K0':  {'Typ': 'Lauf',   'a': 0.045,  'b': 360.0, 'c': 1.85},  # Nullpunkt stark entschärft
+    'M_1KSC': {'Typ': 'Lauf',   'a': 0.045,  'b': 360.0, 'c': 1.85},  # Nullpunkt stark entschärft
+    'M_1K5':  {'Typ': 'Lauf',   'a': 0.03,   'b': 480.0, 'c': 1.85},
     'M_WEI':  {'Typ': 'Sprung', 'a': 0.15,   'b': 150.0, 'c': 1.4},   
     'M_VOR':  {'Typ': 'Wurf',   'a': 12.0,   'b': 5.0,   'c': 1.1},   
     
@@ -32,11 +32,11 @@ CUP_PARAMS = {
     'W_10H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 26.0,  'c': 1.81},
     'W_20H':  {'Typ': 'Lauf',   'a': 3.5,    'b': 48.0,  'c': 1.81},
     'W_400':  {'Typ': 'Lauf',   'a': 0.25,   'b': 140.0, 'c': 1.85},
-    'W_600':  {'Typ': 'Lauf',   'a': 0.055,  'b': 260.0, 'c': 1.85},
+    'W_600':  {'Typ': 'Lauf',   'a': 0.065,  'b': 260.0, 'c': 1.85},  # Erhöht
     'W_800':  {'Typ': 'Lauf',   'a': 0.1,    'b': 260.0, 'c': 1.85},
-    'W_1K0':  {'Typ': 'Lauf',   'a': 0.08,   'b': 320.0, 'c': 1.85},
-    'W_1KSC': {'Typ': 'Lauf',   'a': 0.08,   'b': 320.0, 'c': 1.85},
-    'W_1K5':  {'Typ': 'Lauf',   'a': 0.04,   'b': 500.0, 'c': 1.85},
+    'W_1K0':  {'Typ': 'Lauf',   'a': 0.045,  'b': 380.0, 'c': 1.85},  # Nullpunkt stark entschärft
+    'W_1KSC': {'Typ': 'Lauf',   'a': 0.045,  'b': 380.0, 'c': 1.85},  # Nullpunkt stark entschärft
+    'W_1K5':  {'Typ': 'Lauf',   'a': 0.03,   'b': 500.0, 'c': 1.85},
     'W_WEI':  {'Typ': 'Sprung', 'a': 0.18,   'b': 140.0, 'c': 1.41},
     'W_VOR':  {'Typ': 'Wurf',   'a': 13.0,   'b': 4.0,   'c': 1.1},
 }
@@ -255,26 +255,48 @@ try:
     df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
     
     if not df_db.empty:
-        st.subheader("🔍 Globale Suche")
-        search_query = st.text_input("Suchen nach Name, Verein oder Altersklasse:", "")
+        # --- ZENTRALES FILTERMENÜ ---
+        st.subheader("🔍 Auswertung filtern")
+        
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: 
+            f_search = st.text_input("Suchen (Name/Verein):", "")
+        with c2: 
+            f_class = st.multiselect("Altersklasse:", sorted(df_db['Class'].dropna().unique().tolist()))
+        with c3: 
+            f_gender = st.multiselect("Geschlecht:", sorted(df_db['Gender'].dropna().unique().tolist()))
+        with c4: 
+            f_club = st.multiselect("Verein:", sorted(df_db['ClubName'].dropna().unique().tolist()))
 
+        # Filter auf Kopie des Dataframes anwenden
+        filtered_df = df_db.copy()
+        
+        if f_class:
+            filtered_df = filtered_df[filtered_df['Class'].isin(f_class)]
+        if f_gender:
+            filtered_df = filtered_df[filtered_df['Gender'].isin(f_gender)]
+        if f_club:
+            filtered_df = filtered_df[filtered_df['ClubName'].isin(f_club)]
+        if f_search:
+            filtered_df = filtered_df[
+                filtered_df['FirstName'].str.contains(f_search, case=False, na=False) |
+                filtered_df['LastName'].str.contains(f_search, case=False, na=False) |
+                filtered_df['ClubName'].str.contains(f_search, case=False, na=False)
+            ]
+
+        # --- TABS ---
         tab_cup, tab_all_perfs, tab_rank, tab_win, tab_plot, tab_raw = st.tabs([
             "📊 Gesamtwertung Cup", "🏅 Alle Leistungen & Punkte", "🥈 Teilnahmen-Medaillen", "🥇 Einzel-Sieger", "📈 Grafiken", "📋 Rohdaten"
         ])
 
-        # Cup-Daten berechnen
-        cup_df, valid_perfs_df, counted_indices = get_cup_data(df_db)
+        # Berechnungen basieren nun IMMER auf den gefilterten Daten (filtered_df)
+        cup_df, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
 
-        # --- TAB 1: GESAMTWERTUNG ---
         with tab_cup:
             st.info("Regeln: 6 gewertete Starts aus mind. 5 unterschiedlichen Disziplinen. Gewertete Leistungen sind in den Details markiert.")
-            
-            display_cup_df = cup_df.copy()
-            if search_query and not display_cup_df.empty:
-                display_cup_df = display_cup_df[display_cup_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
                 
-            if not display_cup_df.empty:
-                st.dataframe(display_cup_df[['Status', 'Fortschritt', 'Fehlend', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], 
+            if not cup_df.empty:
+                st.dataframe(cup_df[['Status', 'Fortschritt', 'Fehlend', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], 
                              column_config={
                                  "Status": st.column_config.TextColumn("Qualifikation"),
                                  "Fortschritt": st.column_config.TextColumn("Starts"),
@@ -284,39 +306,28 @@ try:
                              },
                              width='stretch', hide_index=True)
                 
-                csv_cup = display_cup_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                csv_cup = cup_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button("📥 Cup-Wertung herunterladen", csv_cup, "cup_gesamtwertung.csv", "text/csv")
             else:
-                st.info("Keine Daten für den Cup gefunden.")
+                st.info("Mit diesen Filtern wurden keine Teilnehmer gefunden.")
 
-        # --- TAB 2: ALLE LEISTUNGEN & PUNKTE (FEHLER BEHOBEN) ---
         with tab_all_perfs:
-            st.subheader("Detailübersicht aller absolvierten Leistungen (U10-U14)")
-            st.info("Jede Zeile, die in die Gesamtwertung (Best 6) einfließt, ist **fett markiert** und hat ein ⭐.")
+            st.subheader("Detailübersicht (Gefiltert)")
             
             if not valid_perfs_df.empty:
-                # Vorbereiten des Dataframes
                 disp_df = valid_perfs_df[['FirstName', 'LastName', 'Class', 'ClubName', 'Event', 'Result', 'CupPoints']].copy()
-                # Sicher prüfen, ob der Index im Set der gewerteten Leistungen liegt
                 disp_df['Gewertet'] = disp_df.index.isin(counted_indices)
                 
-                # Sortieren und Index neu aufbauen, damit die Zuweisung in Styler sicher funktioniert
                 disp_df = disp_df.sort_values(['LastName', 'FirstName', 'CupPoints'], ascending=[True, True, False]).reset_index(drop=True)
                 disp_df['Gewertet_Str'] = disp_df['Gewertet'].apply(lambda x: "⭐ Ja" if x else "Nein")
                 
-                if search_query:
-                    disp_df = disp_df[disp_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-
-                # Sicher aus dem Dataframe die Spalte extrahieren, OHNE sie zu löschen
                 display_cols_df = disp_df.drop(columns=['Gewertet'])
 
                 def highlight_counted(row):
-                    # Zieht sich die Info sicher über die Original-Zeilennummer (row.name)
                     if disp_df.loc[row.name, 'Gewertet']:
                         return ['font-weight: bold; background-color: rgba(255, 215, 0, 0.15)'] * len(row)
                     return [''] * len(row)
                 
-                # Style anwenden
                 styled_df = display_cols_df.style.apply(highlight_counted, axis=1)
                 
                 st.dataframe(styled_df, 
@@ -327,14 +338,11 @@ try:
                              },
                              width='stretch', hide_index=True)
             else:
-                st.info("Keine gültigen Leistungen gefunden.")
+                st.info("Mit diesen Filtern gibt es keine absolvierten Leistungen.")
 
-        # --- TAB 3: MEDAILLEN ---
         with tab_rank:
-            rank_df = get_medal_ranking(df_db)
-            if search_query:
-                rank_df = rank_df[rank_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-
+            rank_df = get_medal_ranking(filtered_df)
+            
             c1, c2, c3 = st.columns(3)
             c1.metric("🥇 Gold (3+)", len(rank_df[rank_df['Kategorie'] == "🥇 Gold"]))
             c2.metric("🥈 Silber (2)", len(rank_df[rank_df['Kategorie'] == "🥈 Silber"]))
@@ -343,40 +351,27 @@ try:
             st.dataframe(rank_df[['Kategorie', 'FirstName', 'LastName', 'Class', 'ClubName', 'Perf_String', 'isValid']], 
                          column_config={"isValid": "Gültige Leistungen", "Perf_String": "Details"}, 
                          width='stretch', hide_index=True)
-            
-            csv_rank = rank_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 Medaillen-Ranking herunterladen", csv_rank, "medaillen_ranking.csv", "text/csv")
 
-        # --- TAB 4: SIEGER ---
         with tab_win:
-            winners_df = get_winners_list(df_db)
+            winners_df = get_winners_list(filtered_df)
             if not winners_df.empty:
-                if search_query:
-                    winners_df = winners_df[winners_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-                
                 st.dataframe(winners_df[['Event', 'Class', 'FirstName', 'LastName', 'ClubName', 'Result']], 
                              width='stretch', hide_index=True)
-                csv_win = winners_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Siegerliste herunterladen", csv_win, "siegerliste.csv", "text/csv")
 
-        # --- TAB 5: PLOTS ---
         with tab_plot:
-            sel_event = st.selectbox("Bewerb für Grafik wählen:", sorted(df_db['Event'].unique()))
-            plot_df = df_db[df_db['Event'] == sel_event].dropna(subset=['Result_Num'])
-            if search_query:
-                plot_df = plot_df[plot_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-            
-            if not plot_df.empty:
-                fig = px.box(plot_df, x="Class", y="Result_Num", color="Class", points="all", hover_data=["FirstName", "LastName", "CupPoints"])
-                fig.update_layout(yaxis_title="Ergebnis")
-                st.plotly_chart(fig, width="stretch")
+            if not filtered_df.empty:
+                sel_event = st.selectbox("Bewerb für Grafik wählen:", sorted(filtered_df['Event'].dropna().unique()))
+                plot_df = filtered_df[filtered_df['Event'] == sel_event].dropna(subset=['Result_Num'])
+                
+                if not plot_df.empty:
+                    fig = px.box(plot_df, x="Class", y="Result_Num", color="Class", points="all", hover_data=["FirstName", "LastName", "CupPoints"])
+                    fig.update_layout(yaxis_title="Ergebnis")
+                    st.plotly_chart(fig, width="stretch")
+                else:
+                    st.warning("Keine Werte für die Grafik vorhanden.")
 
-        # --- TAB 6: ROHDATEN ---
         with tab_raw:
-            raw_display = df_db
-            if search_query:
-                raw_display = raw_display[raw_display.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-            st.dataframe(raw_display, width='stretch')
+            st.dataframe(filtered_df, width='stretch')
 
     else:
         st.info("Bitte lade eine CSV-Datei hoch.")
@@ -384,5 +379,4 @@ try:
 except sqlite3.OperationalError:
     st.info("Willkommen! Lade bitte eine CSV-Datei in der Sidebar hoch.")
 except Exception as e:
-    # NEU: Verhindert, dass echte Code-Fehler verschluckt werden!
     st.error(f"Ein Fehler ist aufgetreten: {e}")
