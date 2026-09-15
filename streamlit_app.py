@@ -19,7 +19,7 @@ CUP_PARAMS = {
     'M_10H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 25.0,  'c': 1.81}, 
     'M_20H':  {'Typ': 'Lauf',   'a': 3.5,    'b': 45.0,  'c': 1.81},
     'M_400':  {'Typ': 'Lauf',   'a': 0.25,   'b': 130.0, 'c': 1.85},
-    'M_600':  {'Typ': 'Lauf',   'a': 0.16,   'b': 180.0, 'c': 1.85},
+    'M_600':  {'Typ': 'Lauf',   'a': 0.06,   'b': 250.0, 'c': 1.85}, # Großzügiger kalibriert!
     'M_800':  {'Typ': 'Lauf',   'a': 0.1,    'b': 240.0, 'c': 1.85}, 
     'M_1K0':  {'Typ': 'Lauf',   'a': 0.08,   'b': 300.0, 'c': 1.85}, 
     'M_1KSC': {'Typ': 'Lauf',   'a': 0.08,   'b': 300.0, 'c': 1.85},
@@ -32,7 +32,7 @@ CUP_PARAMS = {
     'W_10H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 26.0,  'c': 1.81},
     'W_20H':  {'Typ': 'Lauf',   'a': 3.5,    'b': 48.0,  'c': 1.81},
     'W_400':  {'Typ': 'Lauf',   'a': 0.25,   'b': 140.0, 'c': 1.85},
-    'W_600':  {'Typ': 'Lauf',   'a': 0.15,   'b': 190.0, 'c': 1.85},
+    'W_600':  {'Typ': 'Lauf',   'a': 0.055,  'b': 260.0, 'c': 1.85}, # Großzügiger kalibriert!
     'W_800':  {'Typ': 'Lauf',   'a': 0.1,    'b': 260.0, 'c': 1.85},
     'W_1K0':  {'Typ': 'Lauf',   'a': 0.08,   'b': 320.0, 'c': 1.85},
     'W_1KSC': {'Typ': 'Lauf',   'a': 0.08,   'b': 320.0, 'c': 1.85},
@@ -111,12 +111,23 @@ def load_and_clean_data(file):
         return None
 
 # --- DATEN AUSWERTUNGEN ---
-def get_cup_ranking(df):
+def get_cup_data(df):
+    """Berechnet das Ranking UND liefert die Indices aller gewerteten Leistungen zurück."""
     target_classes = ['U10', 'U12', 'U14']
     df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
     valid_df = df_filtered[df_filtered['isValid'] == True].copy()
     
     rankings = []
+    all_counted_indices = set()
+    
+    # Katalog der Disziplinen-Gruppen
+    cat_map = {
+        'Sprint': ['60M', '100', '200', '300', '400'],
+        'Hürden': ['10H', '20H', '30H'],
+        'Sprung': ['WEI'],
+        'Wurf': ['VOR'],
+        'Ausdauer': ['600', '800', '1K0', '1K5', '1KSC', '2K0', '3K0']
+    }
     
     for (fname, lname, yob, club, gender, a_class), group in valid_df.groupby(['FirstName', 'LastName', 'Yob', 'ClubName', 'Gender', 'Class']):
         
@@ -144,23 +155,25 @@ def get_cup_ranking(df):
                 counted_idx.append(idx)
                 break
                 
-        # Zusammenfassung Punkte
-        total_points = sorted_res.loc[counted_idx, 'CupPoints'].sum()
+        all_counted_indices.update(counted_idx)
         
         # Fortschritts-Anzeige (x/6)
         progress = f"{len(counted_idx)}/6"
         
-        # Fehlende Bedingungen ermitteln
+        # Genau ermitteln, WAS fehlt
+        missing_cats = [name for name, events in cat_map.items() if not any(e in unique_events for e in events)]
         missing_starts = max(0, 6 - total_starts)
-        missing_unique = max(0, 5 - len(unique_events))
         
         fehlend = []
         if missing_starts > 0:
             fehlend.append(f"{missing_starts} Start(s)")
-        if missing_unique > 0:
-            fehlend.append(f"{missing_unique} Disziplin(en)")
+        if missing_cats:
+            fehlend.append(f"Fehlt: {', '.join(missing_cats)}")
             
-        fehlend_str = "✅" if is_qualified else " & ".join(fehlend)
+        fehlend_str = "✅" if is_qualified else " | ".join(fehlend)
+        
+        # Zusammenfassung Punkte
+        total_points = sorted_res.loc[counted_idx, 'CupPoints'].sum()
         
         # Leistungsdetails mit Zeilenumbruch (\n) und Fettdruck (**)
         details = []
@@ -180,15 +193,15 @@ def get_cup_ranking(df):
             'LastName': lname,
             'ClubName': club,
             'CupPoints': int(total_points),
-            'EventDetails': '\n'.join(details), # Zeilenumbruch für bessere Lesbarkeit
+            'EventDetails': '\n'.join(details), 
             '_status_sort': status_sort
         })
         
     ranking_df = pd.DataFrame(rankings)
     if not ranking_df.empty:
-        # Zuerst nach Qualifikation, dann Klasse, Geschlecht, und Punkte
-        return ranking_df.sort_values(['_status_sort', 'Class', 'Gender', 'CupPoints'], ascending=[True, True, True, False]).drop(columns=['_status_sort'])
-    return pd.DataFrame()
+        ranking_df = ranking_df.sort_values(['_status_sort', 'Class', 'Gender', 'CupPoints'], ascending=[True, True, True, False]).drop(columns=['_status_sort'])
+        
+    return ranking_df, valid_df, all_counted_indices
 
 def get_medal_ranking(df):
     target_classes = ['U10', 'U12', 'U14']
@@ -253,20 +266,24 @@ try:
         st.subheader("🔍 Globale Suche")
         search_query = st.text_input("Suchen nach Name, Verein oder Altersklasse:", "")
 
-        tab_cup, tab_rank, tab_win, tab_plot, tab_raw = st.tabs([
-            "📊 Gesamtwertung Cup", "🏅 Teilnahmen-Medaillen", "🥇 Einzel-Sieger", "📈 Grafiken", "📋 Rohdaten"
+        # NEU: Ein extra Reiter "Alle Leistungen & Punkte"
+        tab_cup, tab_all_perfs, tab_rank, tab_win, tab_plot, tab_raw = st.tabs([
+            "📊 Gesamtwertung Cup", "🏅 Alle Leistungen & Punkte", "🥈 Teilnahmen-Medaillen", "🥇 Einzel-Sieger", "📈 Grafiken", "📋 Rohdaten"
         ])
 
+        # Berechne die Cup-Daten einmal für die ersten beiden Tabs
+        cup_df, valid_perfs_df, counted_indices = get_cup_data(df_db)
+
+        # --- TAB 1: GESAMTWERTUNG ---
         with tab_cup:
             st.info("Regeln: 6 gewertete Starts aus mind. 5 unterschiedlichen Disziplinen. Gewertete Leistungen sind in den Details markiert.")
             
-            cup_df = get_cup_ranking(df_db)
-            
-            if search_query and not cup_df.empty:
-                cup_df = cup_df[cup_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+            display_cup_df = cup_df.copy()
+            if search_query and not display_cup_df.empty:
+                display_cup_df = display_cup_df[display_cup_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
                 
-            if not cup_df.empty:
-                st.dataframe(cup_df[['Status', 'Fortschritt', 'Fehlend', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], 
+            if not display_cup_df.empty:
+                st.dataframe(display_cup_df[['Status', 'Fortschritt', 'Fehlend', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], 
                              column_config={
                                  "Status": st.column_config.TextColumn("Qualifikation"),
                                  "Fortschritt": st.column_config.TextColumn("Starts"),
@@ -276,11 +293,49 @@ try:
                              },
                              width='stretch', hide_index=True)
                 
-                csv_cup = cup_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                csv_cup = display_cup_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button("📥 Cup-Wertung herunterladen", csv_cup, "cup_gesamtwertung.csv", "text/csv")
             else:
                 st.info("Keine Daten für den Cup gefunden.")
 
+        # --- TAB 2: ALLE LEISTUNGEN & PUNKTE (FETT MARKIERUNG) ---
+        with tab_all_perfs:
+            st.subheader("Detailübersicht aller absolvierten Leistungen (U10-U14)")
+            st.info("Jede Zeile, die in die Gesamtwertung (Best 6) einfließt, ist **fett markiert** und hat ein ⭐.")
+            
+            if not valid_perfs_df.empty:
+                # Kopie erstellen und markieren
+                all_disp = valid_perfs_df.copy()
+                all_disp['Gewertet'] = all_disp.index.isin(counted_indices)
+                
+                # Schöne Darstellung für die Tabelle
+                disp_df = all_disp[['FirstName', 'LastName', 'Class', 'ClubName', 'Event', 'Result', 'CupPoints', 'Gewertet']].copy()
+                disp_df = disp_df.sort_values(['LastName', 'FirstName', 'CupPoints'], ascending=[True, True, False])
+                disp_df['Gewertet_Str'] = disp_df['Gewertet'].apply(lambda x: "⭐ Ja" if x else "Nein")
+                
+                if search_query:
+                    disp_df = disp_df[disp_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+
+                # Pandas Styler für die fette Markierung
+                def highlight_counted(row):
+                    if row['Gewertet'] == True:
+                        return ['font-weight: bold; background-color: rgba(255, 215, 0, 0.1)'] * len(row)
+                    return [''] * len(row)
+                
+                # Spalte 'Gewertet' (Boolean) verstecken, dafür den String anzeigen
+                styled_df = disp_df.drop(columns=['Gewertet']).style.apply(highlight_counted, axis=1)
+                
+                st.dataframe(styled_df, 
+                             column_config={
+                                 "Result": "Ergebnis",
+                                 "CupPoints": "Erreichte Punkte",
+                                 "Gewertet_Str": "In Cup-Wertung?"
+                             },
+                             width='stretch', hide_index=True)
+            else:
+                st.info("Keine gültigen Leistungen gefunden.")
+
+        # --- TAB 3: MEDAILLEN ---
         with tab_rank:
             rank_df = get_medal_ranking(df_db)
             if search_query:
@@ -294,10 +349,8 @@ try:
             st.dataframe(rank_df[['Kategorie', 'FirstName', 'LastName', 'Class', 'ClubName', 'Perf_String', 'isValid']], 
                          column_config={"isValid": "Gültige Leistungen", "Perf_String": "Details"}, 
                          width='stretch', hide_index=True)
-            
-            csv_rank = rank_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 Medaillen-Ranking herunterladen", csv_rank, "medaillen_ranking.csv", "text/csv")
 
+        # --- TAB 4: SIEGER ---
         with tab_win:
             winners_df = get_winners_list(df_db)
             if not winners_df.empty:
@@ -306,9 +359,8 @@ try:
                 
                 st.dataframe(winners_df[['Event', 'Class', 'FirstName', 'LastName', 'ClubName', 'Result']], 
                              width='stretch', hide_index=True)
-                csv_win = winners_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Siegerliste herunterladen", csv_win, "siegerliste.csv", "text/csv")
 
+        # --- TAB 5: PLOTS ---
         with tab_plot:
             sel_event = st.selectbox("Bewerb für Grafik wählen:", sorted(df_db['Event'].unique()))
             plot_df = df_db[df_db['Event'] == sel_event].dropna(subset=['Result_Num'])
@@ -320,6 +372,7 @@ try:
                 fig.update_layout(yaxis_title="Ergebnis")
                 st.plotly_chart(fig, width="stretch")
 
+        # --- TAB 6: ROHDATEN ---
         with tab_raw:
             raw_display = df_db
             if search_query:
