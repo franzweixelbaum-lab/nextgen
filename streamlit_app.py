@@ -12,17 +12,17 @@ def get_connection():
 
 conn = get_connection()
 
-# --- CUP-PUNKTESYSTEM (Neu balanciert!) ---
+# --- CUP-PUNKTESYSTEM (Ausdauer Fair Kalibriert!) ---
 CUP_PARAMS = {
     # --- MÄNNLICH ---
-    'M_60M':  {'Typ': 'Lauf',   'a': 40.0,   'b': 12.5,  'c': 1.81},  # Leicht nach unten korrigiert
-    'M_10H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 30.0,  'c': 1.81},  # b-Wert (Nullpunkt) deutlich angehoben
-    'M_20H':  {'Typ': 'Lauf',   'a': 2.5,    'b': 55.0,  'c': 1.81},  # b-Wert deutlich angehoben
+    'M_60M':  {'Typ': 'Lauf',   'a': 40.0,   'b': 12.5,  'c': 1.81},
+    'M_10H':  {'Typ': 'Lauf',   'a': 5.0,    'b': 30.0,  'c': 1.81}, 
+    'M_20H':  {'Typ': 'Lauf',   'a': 2.5,    'b': 55.0,  'c': 1.81},
     'M_400':  {'Typ': 'Lauf',   'a': 0.22,   'b': 130.0, 'c': 1.85},
-    'M_600':  {'Typ': 'Lauf',   'a': 0.06,   'b': 250.0, 'c': 1.85},  # Leicht nach unten korrigiert
+    'M_600':  {'Typ': 'Lauf',   'a': 0.06,   'b': 250.0, 'c': 1.85},
     'M_800':  {'Typ': 'Lauf',   'a': 0.09,   'b': 240.0, 'c': 1.85}, 
-    'M_1K0':  {'Typ': 'Lauf',   'a': 0.04,   'b': 360.0, 'c': 1.85},  # Leicht nach unten korrigiert
-    'M_1KSC': {'Typ': 'Lauf',   'a': 0.04,   'b': 360.0, 'c': 1.85},
+    'M_1K0':  {'Typ': 'Lauf',   'a': 0.04,   'b': 360.0, 'c': 1.85}, 
+    'M_1KSC': {'Typ': 'Lauf',   'a': 0.04,   'b': 380.0, 'c': 1.85}, # Für Hindernis/Cross großzügiger als 1K0
     'M_1K5':  {'Typ': 'Lauf',   'a': 0.03,   'b': 480.0, 'c': 1.85},
     'M_WEI':  {'Typ': 'Sprung', 'a': 0.15,   'b': 150.0, 'c': 1.4},   
     'M_VOR':  {'Typ': 'Wurf',   'a': 12.0,   'b': 5.0,   'c': 1.1},   
@@ -35,7 +35,7 @@ CUP_PARAMS = {
     'W_600':  {'Typ': 'Lauf',   'a': 0.055,  'b': 260.0, 'c': 1.85},
     'W_800':  {'Typ': 'Lauf',   'a': 0.09,   'b': 260.0, 'c': 1.85},
     'W_1K0':  {'Typ': 'Lauf',   'a': 0.04,   'b': 380.0, 'c': 1.85},
-    'W_1KSC': {'Typ': 'Lauf',   'a': 0.04,   'b': 380.0, 'c': 1.85},
+    'W_1KSC': {'Typ': 'Lauf',   'a': 0.04,   'b': 400.0, 'c': 1.85}, # Für Hindernis/Cross großzügiger als 1K0
     'W_1K5':  {'Typ': 'Lauf',   'a': 0.03,   'b': 500.0, 'c': 1.85},
     'W_WEI':  {'Typ': 'Sprung', 'a': 0.18,   'b': 140.0, 'c': 1.41},
     'W_VOR':  {'Typ': 'Wurf',   'a': 13.0,   'b': 4.0,   'c': 1.1},
@@ -198,26 +198,26 @@ def generate_spectrum_csv():
     """Generiert eine Tabelle mit Testwerten für die Punkte-Sichtprüfung."""
     test_data = []
     
-    # Test-Leistungen definieren
+    # 1KSC (Cross) wurde hier zur Prüfung hinzugefügt!
     events_to_test = {
         '60M': [7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
         '10H': [16.0, 18.0, 20.0, 22.0, 24.0, 26.0],
         '20H': [30.0, 34.0, 38.0, 42.0, 46.0, 50.0],
-        '600': [110, 130, 150, 170, 190, 210], # In Sekunden
-        '1K0': [180, 210, 240, 270, 300, 330], # In Sekunden
-        'WEI': [5.5, 4.8, 4.1, 3.5, 2.9, 2.0], # In Metern
+        '600': [110, 130, 150, 170, 190, 210],
+        '1K0': [180, 210, 240, 270, 300, 330],
+        '1KSC': [180, 210, 240, 270, 300, 330], 
+        'WEI': [5.5, 4.8, 4.1, 3.5, 2.9, 2.0],
         'VOR': [50.0, 40.0, 30.0, 20.0, 15.0, 10.0]
     }
     
     for ev, results in events_to_test.items():
         for res in results:
             for gender in ['M', 'W']:
-                # Mock Row
                 row = {'Result_Num': res, 'Event': ev, 'Gender': gender}
                 pts = calculate_cup_points(row)
                 
-                # Lesbare Formatierung für Zeiten
-                if ev in ['600', '1K0']:
+                # Formatierung für Laufbewerbe (Minuten:Sekunden)
+                if ev in ['600', '1K0', '1KSC']:
                     mins = int(res // 60)
                     secs = int(res % 60)
                     res_str = f"{mins}:{secs:02d}"
@@ -233,6 +233,44 @@ def generate_spectrum_csv():
                 })
                 
     return pd.DataFrame(test_data).sort_values(['Bewerb', 'Geschlecht', 'Wert_intern'])
+
+def get_medal_ranking(df):
+    target_classes = ['U10', 'U12', 'U14']
+    df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
+    
+    df_filtered['Perf_String'] = df_filtered.apply(
+        lambda x: f"{x['Event']} ({x['Result']})" if x['isValid'] else f"{x['Event']} (-)", axis=1
+    )
+
+    ranking = df_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg({
+        'ClubName': 'first', 'Class': 'first',
+        'Perf_String': lambda x: ', '.join(x.astype(str)),
+        'isValid': 'sum'
+    }).reset_index()
+
+    def categorize(count):
+        if count >= 3: return "🥇 Gold"
+        elif count == 2: return "🥈 Silber"
+        elif count == 1: return "🥉 Bronze"
+        return "DNS"
+
+    ranking['Kategorie'] = ranking['isValid'].apply(categorize)
+    cat_order = {"🥇 Gold": 0, "🥈 Silber": 1, "🥉 Bronze": 2, "DNS": 3}
+    ranking['Sort'] = ranking['Kategorie'].map(cat_order)
+    return ranking.sort_values(['Sort', 'LastName']).drop(columns=['Sort'])
+
+def get_winners_list(df):
+    target_classes = ['U10', 'U12', 'U14']
+    valid_df = df[df['Class'].str.contains('|'.join(target_classes), na=False) & (df['isValid'] == True)].dropna(subset=['Result_Num'])
+    
+    time_events = ['M', 'H', '100', '200', '400', '600', '800', '1K', '2K', '3K']
+    winners = []
+    for (event, age_class), group in valid_df.groupby(['Event', 'Class']):
+        is_time = any(t in event.upper() for t in time_events)
+        winner_row = group.loc[group['Result_Num'].idxmin()] if is_time else group.loc[group['Result_Num'].idxmax()]
+        winners.append(winner_row)
+        
+    return pd.DataFrame(winners).sort_values(['Event', 'Class']) if winners else pd.DataFrame()
 
 # --- DASHBOARD UI ---
 st.title("🏆 Moderne Leichtathletik-Auswertung")
@@ -256,7 +294,6 @@ try:
     df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
     
     if not df_db.empty:
-        # --- ZENTRALES FILTERMENÜ (JETZT MIT BEWERB-FILTER) ---
         st.subheader("🔍 Auswertung filtern")
         
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -269,7 +306,6 @@ try:
         with c4: 
             f_club = st.multiselect("Verein:", sorted(df_db['ClubName'].dropna().unique().tolist()))
         with c5:
-            # NEUER FILTER: Bewerb
             f_event = st.multiselect("Bewerb:", sorted(df_db['Event'].dropna().unique().tolist()))
 
         filtered_df = df_db.copy()
@@ -285,7 +321,6 @@ try:
                 filtered_df['ClubName'].str.contains(f_search, case=False, na=False)
             ]
 
-        # --- TABS ---
         tab_cup, tab_all_perfs, tab_rank, tab_win, tab_plot, tab_spec, tab_raw = st.tabs([
             "📊 Gesamtwertung Cup", "🏅 Alle Leistungen & Punkte", "🥈 Teilnahmen-Medaillen", 
             "🥇 Einzel-Sieger", "📈 Grafiken", "📋 Punkte-Spektrum", "📋 Rohdaten"
@@ -323,12 +358,22 @@ try:
                 st.info("Mit diesen Filtern gibt es keine absolvierten Leistungen.")
 
         with tab_rank:
-            # Medaillen übersprungen im Code-Block für Übersichtlichkeit, aber hier eingebaut
             st.info("Medaillen-Auswertung (Nutzt die Basis-Funktion ohne Filter-Störung)")
+            rank_df = get_medal_ranking(filtered_df)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("🥇 Gold (3+)", len(rank_df[rank_df['Kategorie'] == "🥇 Gold"]))
+            c2.metric("🥈 Silber (2)", len(rank_df[rank_df['Kategorie'] == "🥈 Silber"]))
+            c3.metric("🥉 Bronze (1)", len(rank_df[rank_df['Kategorie'] == "🥉 Bronze"]))
+            
+            st.dataframe(rank_df[['Kategorie', 'FirstName', 'LastName', 'Class', 'ClubName', 'Perf_String', 'isValid']], 
+                         column_config={"isValid": "Gültige Leistungen", "Perf_String": "Details"}, 
+                         width='stretch', hide_index=True)
 
         with tab_win:
-            winners_df = pd.DataFrame() # Platzhalter (verhält sich wie vorher)
-            st.info("Einzel-Sieger")
+            winners_df = get_winners_list(filtered_df)
+            if not winners_df.empty:
+                st.dataframe(winners_df[['Event', 'Class', 'FirstName', 'LastName', 'ClubName', 'Result']], 
+                             width='stretch', hide_index=True)
 
         with tab_plot:
             if not filtered_df.empty:
@@ -338,17 +383,16 @@ try:
                     fig = px.box(plot_df, x="Class", y="Result_Num", color="Class", points="all", hover_data=["FirstName", "LastName", "CupPoints"])
                     fig.update_layout(yaxis_title="Ergebnis")
                     st.plotly_chart(fig, width="stretch")
+                else:
+                    st.warning("Keine Werte für die Grafik vorhanden.")
 
-        # --- NEUER TAB: PUNKTE SPEKTRUM ---
         with tab_spec:
             st.subheader("Übersicht: Punkte für Test-Ergebnisse")
-            st.info("Hier siehst du, wie viele Punkte das System für bestimmte (fiktive) Leistungen vergibt. Lade die Tabelle als CSV herunter, um sie mit deinen Trainern zu besprechen.")
-            
             spec_df = generate_spectrum_csv()
             st.dataframe(spec_df, width='stretch', hide_index=True)
             
             csv_spec = spec_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 Punkte-Spektrum (CSV) herunterladen", csv_spec, "punkte_spektrum_check.csv", "text/csv")
+            st.download_button("📥 Punkte-Spektrum herunterladen", csv_spec, "punkte_spektrum_check.csv", "text/csv")
 
         with tab_raw:
             st.dataframe(filtered_df, width='stretch')
