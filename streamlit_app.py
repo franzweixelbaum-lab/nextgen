@@ -189,10 +189,9 @@ def get_cup_data(df):
     return ranking_df, valid_df, all_counted_indices
 
 def calculate_prognosis(df_db, df_meld):
-    """Berechnet die Medaillen/Cup-Prognose für U10, U12, U14, auch wenn keine Meldungen vorhanden sind."""
+    """Kombiniert bestehende Ergebnisse mit Meldungen."""
     target_classes = ['U10', 'U12', 'U14']
     
-    # 1. Bisherige Starts ermitteln
     if not df_db.empty:
         db_filtered = df_db[df_db['Class'].str.contains('|'.join(target_classes), na=False)]
         bisher_athletes = db_filtered[db_filtered['isValid'] == True].groupby(['FirstName', 'LastName', 'Yob']).agg(
@@ -203,7 +202,6 @@ def calculate_prognosis(df_db, df_meld):
     else:
         bisher_athletes = pd.DataFrame(columns=['FirstName', 'LastName', 'Yob', 'Starts_Bisher', 'ClubName', 'Class'])
 
-    # 2. Neue Meldungen ermitteln (falls vorhanden)
     if df_meld is not None and not df_meld.empty:
         meld_filtered = df_meld[df_meld['Class'].str.contains('|'.join(target_classes), na=False)]
         meld_athletes = meld_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
@@ -212,7 +210,6 @@ def calculate_prognosis(df_db, df_meld):
             Class_M=('Class', 'first')
         ).reset_index()
         
-        # Beide Listen kreuzen (Outer Join, damit auch ganz neue Kinder dabei sind)
         prog_df = pd.merge(bisher_athletes, meld_athletes, on=['FirstName', 'LastName', 'Yob'], how='outer')
         prog_df['Starts_Bisher'] = prog_df['Starts_Bisher'].fillna(0).astype(int)
         prog_df['Starts_Neu'] = prog_df['Starts_Neu'].fillna(0).astype(int)
@@ -221,7 +218,6 @@ def calculate_prognosis(df_db, df_meld):
         prog_df['ClubName'] = prog_df['ClubName'].fillna(prog_df['ClubName_M'])
         prog_df = prog_df.drop(columns=['Class_M', 'ClubName_M'])
     else:
-        # Wenn keine Vorschau hochgeladen wurde, nehmen wir den Ist-Stand
         prog_df = bisher_athletes.copy()
         prog_df['Starts_Neu'] = 0
         if prog_df.empty:
@@ -239,11 +235,6 @@ def calculate_prognosis(df_db, df_meld):
     prog_df['Prognose Gesamt'] = prog_df['Starts_Gesamt'].apply(
         lambda x: "✅ Wird qualifiziert (6+)" if x >= 6 else f"⏳ Es fehlen noch {6-x} Starts"
     )
-    
-    # Sortierung für eine schöne Übersicht
-    cat_order = {"🥇 Gold": 0, "🥈 Silber": 1, "🥉 Bronze": 2, "Nur Teilnehmer": 3}
-    prog_df['Sort'] = prog_df['Saison-Medaille'].map(cat_order)
-    prog_df = prog_df.sort_values(['Sort', 'LastName']).drop(columns=['Sort'])
     
     return prog_df
 
@@ -314,30 +305,30 @@ try:
                     filtered_df['LastName'].str.contains(f_search, case=False, na=False)
                 ]
 
-        tab_prog, tab_cup, tab_all_perfs, tab_raw = st.tabs([
-            "🔮 Medaillenbedarf & Prognose", "📊 Gesamtwertung Cup", "🏅 Alle Leistungen & Punkte", "📋 Rohdaten"
+        tab_med, tab_prog, tab_cup, tab_all_perfs, tab_raw = st.tabs([
+            "🏅 Medaillenbedarf", "🔮 Cup-Prognose", "📊 Gesamtwertung Cup", "🏅 Alle Leistungen & Punkte", "📋 Rohdaten"
         ])
 
-        with tab_prog:
-            st.subheader("Übersicht: Medaillen & Cup-Qualifikation (U10, U12, U14)")
-            
-            prog_df = calculate_prognosis(df_db, df_meld)
-            
+        # Berechne Basis für Medaillen und Prognose (auf U10/U12/U14 Basis)
+        prog_df = calculate_prognosis(df_db, df_meld)
+        if not prog_df.empty:
+            if f_search:
+                prog_df = prog_df[
+                    prog_df['FirstName'].str.contains(f_search, case=False, na=False) |
+                    prog_df['LastName'].str.contains(f_search, case=False, na=False) |
+                    prog_df['ClubName'].str.contains(f_search, case=False, na=False)
+                ]
+            if f_class: prog_df = prog_df[prog_df['Class'].isin(f_class)]
+            if f_club: prog_df = prog_df[prog_df['ClubName'].isin(f_club)]
+
+        # --- TAB 1: MEDAILLENBEDARF ---
+        with tab_med:
+            st.subheader("Übersicht: Medaillenbedarf (1 bis 3+ Starts)")
             if not prog_df.empty:
                 if df_meld.empty:
-                    st.info("Da keine Nennungsliste hochgeladen wurde, siehst du hier den **aktuellen Ist-Stand** der Saison.")
+                    st.info("Keine Nennungsliste vorhanden. Zeigt den **aktuellen Ist-Stand** der Medaillen.")
                 else:
-                    st.success("Vorschau-Modus aktiv: Die bisherigen Ergebnisse wurden mit den neuen Meldungen kombiniert!")
-                
-                # Filter auf die Prognose-Tabelle anwenden
-                if f_search:
-                    prog_df = prog_df[
-                        prog_df['FirstName'].str.contains(f_search, case=False, na=False) |
-                        prog_df['LastName'].str.contains(f_search, case=False, na=False) |
-                        prog_df['ClubName'].str.contains(f_search, case=False, na=False)
-                    ]
-                if f_class: prog_df = prog_df[prog_df['Class'].isin(f_class)]
-                if f_club: prog_df = prog_df[prog_df['ClubName'].isin(f_club)]
+                    st.success("Zeigt den simulierten Bedarf (Bisherige Ergebnisse + Neue Nennungen).")
                 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Gesamt Athleten", len(prog_df))
@@ -345,7 +336,13 @@ try:
                 c3.metric("🥈 Silber (2 Starts)", len(prog_df[prog_df['Saison-Medaille'] == "🥈 Silber"]))
                 c4.metric("🥉 Bronze (1 Start)", len(prog_df[prog_df['Saison-Medaille'] == "🥉 Bronze"]))
 
-                st.dataframe(prog_df[['Prognose Gesamt', 'Saison-Medaille', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher', 'Starts_Neu', 'Starts_Gesamt']], 
+                # Sortierung für Medaillen
+                cat_order = {"🥇 Gold": 0, "🥈 Silber": 1, "🥉 Bronze": 2, "Nur Teilnehmer": 3}
+                med_df = prog_df.copy()
+                med_df['Sort'] = med_df['Saison-Medaille'].map(cat_order)
+                med_df = med_df.sort_values(['Sort', 'LastName']).drop(columns=['Sort'])
+
+                st.dataframe(med_df[['Saison-Medaille', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher', 'Starts_Neu', 'Starts_Gesamt']], 
                              column_config={
                                  "Starts_Bisher": "Starts Bisher",
                                  "Starts_Neu": "Neu gemeldet",
@@ -353,11 +350,44 @@ try:
                              },
                              width='stretch', hide_index=True)
                 
-                csv_prog = prog_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Medaillenliste herunterladen", csv_prog, "medaillenbedarf.csv", "text/csv")
+                csv_med = med_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button("📥 Medaillenliste herunterladen", csv_med, "medaillenbedarf.csv", "text/csv")
             else:
                 st.warning("Keine Athleten der Klassen U10-U14 gefunden.")
 
+        # --- TAB 2: CUP-PROGNOSE ---
+        with tab_prog:
+            st.subheader("Übersicht: Cup-Qualifikation (6+ Starts)")
+            if not prog_df.empty:
+                if df_meld.empty:
+                    st.info("Keine Nennungsliste vorhanden. Zeigt den aktuellen Stand der Cup-Qualifikation.")
+                else:
+                    st.success("Simuliert, wie viele Teilnehmer durch den kommenden Wettkampf die 6 Starts voll machen werden.")
+
+                qual_count = len(prog_df[prog_df['Starts_Gesamt'] >= 6])
+                nah_dran_count = len(prog_df[(prog_df['Starts_Gesamt'] >= 4) & (prog_df['Starts_Gesamt'] < 6)])
+
+                c1, c2 = st.columns(2)
+                c1.metric("✅ Qualifiziert (6+ Starts)", qual_count)
+                c2.metric("🟡 Nah dran (4 oder 5 Starts)", nah_dran_count)
+
+                # Sortierung nach fehlenden Starts
+                prog_df_sorted = prog_df.sort_values(by=['Starts_Gesamt', 'LastName'], ascending=[False, True])
+
+                st.dataframe(prog_df_sorted[['Prognose Gesamt', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher', 'Starts_Neu', 'Starts_Gesamt']], 
+                             column_config={
+                                 "Starts_Bisher": "Starts Bisher",
+                                 "Starts_Neu": "Neu gemeldet",
+                                 "Starts_Gesamt": "Summe Starts"
+                             },
+                             width='stretch', hide_index=True)
+
+                csv_prog = prog_df_sorted.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button("📥 Prognoseliste herunterladen", csv_prog, "cup_prognose.csv", "text/csv")
+            else:
+                st.warning("Keine Athleten der Klassen U10-U14 gefunden.")
+
+        # --- TAB 3: GESAMTWERTUNG CUP ---
         with tab_cup:
             if not filtered_df.empty:
                 cup_df, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
@@ -366,6 +396,7 @@ try:
                 else:
                     st.info("Keine Cup-Teilnehmer mit diesen Filtern gefunden.")
 
+        # --- TAB 4: ALLE LEISTUNGEN ---
         with tab_all_perfs:
             if not filtered_df.empty:
                 _, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
@@ -382,6 +413,7 @@ try:
                     styled_df = display_cols_df.style.apply(highlight_counted, axis=1)
                     st.dataframe(styled_df, width='stretch', hide_index=True)
 
+        # --- TAB 5: ROHDATEN ---
         with tab_raw:
             st.write("Ergebnisse in der Datenbank:")
             st.dataframe(filtered_df, width='stretch')
