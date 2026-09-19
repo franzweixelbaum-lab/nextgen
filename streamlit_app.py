@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 import plotly.express as px
 import numpy as np
+from io import BytesIO
 
 # --- KONFIGURATION ---
 st.set_page_config(page_title="Leichtathletik Auswertung Pro", layout="wide", page_icon="🏆")
@@ -181,6 +182,64 @@ def get_cup_data(df):
         ranking_df = ranking_df.sort_values(['_status_sort', 'Class', 'Gender', 'CupPoints'], ascending=[True, True, True, False]).drop(columns=['_status_sort'])
     return ranking_df, valid_df, all_counted_indices
 
+def create_excel_report(cup_df):
+    """Erstellt einen formatierten Excel-Bericht aus dem Cup-Dataframe."""
+    output = BytesIO()
+    
+    # Sortieren nach Klasse (U10 -> U12 -> U14), dann Geschlecht, dann Punkte
+    df_sorted = cup_df.sort_values(by=['Class', 'Gender', 'CupPoints'], ascending=[True, True, False])
+    
+    cols_to_keep = ['Class', 'Gender', 'Status', 'Fortschritt', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']
+    df_export = df_sorted[cols_to_keep].copy()
+    
+    # Schöne deutsche Spaltennamen
+    df_export = df_export.rename(columns={
+        'Class': 'Altersklasse',
+        'Gender': 'Geschlecht',
+        'Status': 'Qualifikation',
+        'Fortschritt': 'Starts (gewertet)',
+        'CupPoints': 'Punkte',
+        'FirstName': 'Vorname',
+        'LastName': 'Nachname',
+        'ClubName': 'Verein',
+        'EventDetails': 'Details der Leistungen (⭐ in Wertung)'
+    })
+    
+    # Markdown-Sterne (**) für Excel entfernen, da sie dort nicht gerendert werden
+    df_export['Details der Leistungen (⭐ in Wertung)'] = df_export['Details der Leistungen (⭐ in Wertung)'].str.replace('**', '')
+
+    writer = pd.ExcelWriter(output, engine='xlsxwriter')
+    df_export.to_excel(writer, index=False, sheet_name='Cup_Gesamtwertung')
+    
+    workbook = writer.book
+    worksheet = writer.sheets['Cup_Gesamtwertung']
+    
+    # Formate definieren
+    header_format = workbook.add_format({
+        'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
+        'fg_color': '#D7E4BC', 'border': 1
+    })
+    
+    cell_format = workbook.add_format({'valign': 'vcenter'})
+    points_format = workbook.add_format({'valign': 'vcenter', 'align': 'center', 'bold': True})
+    details_format = workbook.add_format({'text_wrap': True, 'valign': 'top'})
+    
+    # Headers formatieren
+    for col_num, value in enumerate(df_export.columns.values):
+        worksheet.write(0, col_num, value, header_format)
+        
+    # Spaltenbreiten anpassen
+    worksheet.set_column('A:B', 12, cell_format)   # Klasse, Geschlecht
+    worksheet.set_column('C:C', 18, cell_format)   # Qualifikation
+    worksheet.set_column('D:D', 15, cell_format)   # Fortschritt
+    worksheet.set_column('E:E', 12, points_format) # Punkte (fett, zentriert)
+    worksheet.set_column('F:G', 15, cell_format)   # Vorname, Nachname
+    worksheet.set_column('H:H', 20, cell_format)   # Verein
+    worksheet.set_column('I:I', 50, details_format)# EventDetails (mit Zeilenumbruch)
+    
+    writer.close()
+    return output.getvalue()
+
 def calculate_prognosis(df_db, df_meld):
     """Kombiniert bestehende Ergebnisse mit Meldungen."""
     target_classes = ['U10', 'U12', 'U14']
@@ -210,17 +269,12 @@ def calculate_prognosis(df_db, df_meld):
         prog_df['Class'] = prog_df['Class'].fillna(prog_df['Class_M'])
         prog_df['ClubName'] = prog_df['ClubName'].fillna(prog_df['ClubName_M'])
         prog_df = prog_df.drop(columns=['Class_M', 'ClubName_M'])
-        
-        # Für Medaillen zählen nur die neuen Starts
         prog_df['Medal_Starts'] = prog_df['Starts_Neu']
     else:
         prog_df = bisher_athletes.copy()
         prog_df['Starts_Neu'] = 0
-        # Ohne Meldeliste zählen die bisherigen Starts für die Medaille (z.B. wenn man nur 1 Event hochgeladen hat)
         prog_df['Medal_Starts'] = prog_df['Starts_Bisher']
-        
-        if prog_df.empty:
-            return pd.DataFrame()
+        if prog_df.empty: return pd.DataFrame()
 
     prog_df['Starts_Gesamt'] = prog_df['Starts_Bisher'] + prog_df['Starts_Neu']
     
@@ -252,7 +306,7 @@ with st.sidebar:
             st.rerun()
 
     st.header("📤 2. Nennungen (Optional)")
-    st.info("Optional: Lade eine Meldeliste für einen kommenden Wettkampf hoch, um den neuen Medaillenbedarf zu simulieren.")
+    st.info("Optional: Lade eine Meldeliste für einen kommenden Wettkampf hoch.")
     file_meldungen = st.file_uploader("Nennungen/Meldungen", type=['csv'], key="meld")
     if file_meldungen and st.button("💾 Meldungen für Prognose speichern"):
         meld_df = load_and_clean_data(file_meldungen)
@@ -268,7 +322,6 @@ with st.sidebar:
         st.rerun()
 
 try:
-    # Live-Berechnung bei jedem Laden
     df_db = pd.DataFrame()
     try:
         df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
@@ -308,7 +361,6 @@ try:
             "🏅 Event-Medaillenbedarf", "🔮 Cup-Prognose", "📊 Gesamtwertung Cup", "🏅 Alle Leistungen & Punkte", "📋 Rohdaten"
         ])
 
-        # Berechne Basis für Medaillen und Prognose (auf U10/U12/U14 Basis)
         prog_df = calculate_prognosis(df_db, df_meld)
         if not prog_df.empty:
             if f_search:
@@ -320,16 +372,9 @@ try:
             if f_class: prog_df = prog_df[prog_df['Class'].isin(f_class)]
             if f_club: prog_df = prog_df[prog_df['ClubName'].isin(f_club)]
 
-        # --- TAB 1: MEDAILLENBEDARF (NUR AKTUELLES EVENT) ---
         with tab_med:
             st.subheader("Übersicht: Medaillenbedarf (1 bis 3+ Starts im Event)")
             if not prog_df.empty:
-                if df_meld.empty:
-                    st.info("Keine Nennungsliste hochgeladen. Zeigt die Medaillen basierend auf der geladenen Ergebnisse-Datei.")
-                else:
-                    st.success("Medaillen werden **NUR** aus den Starts der neuen Nennungsliste berechnet! Alte Starts werden hier ignoriert.")
-                
-                # Wir filtern Kinder ohne Medaillenstarts (also 0 neue Starts) heraus
                 med_df = prog_df[prog_df['Medal_Starts'] > 0].copy()
                 
                 c1, c2, c3, c4 = st.columns(4)
@@ -342,26 +387,11 @@ try:
                 med_df['Sort'] = med_df['Event-Medaille'].map(cat_order)
                 med_df = med_df.sort_values(['Sort', 'LastName']).drop(columns=['Sort'])
 
-                st.dataframe(med_df[['Event-Medaille', 'FirstName', 'LastName', 'Class', 'ClubName', 'Medal_Starts']], 
-                             column_config={
-                                 "Medal_Starts": "Gewertete Event-Starts"
-                             },
-                             width='stretch', hide_index=True)
-                
-                csv_med = med_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Medaillenliste herunterladen", csv_med, "medaillenbedarf_event.csv", "text/csv")
-            else:
-                st.warning("Keine Athleten der Klassen U10-U14 gefunden.")
+                st.dataframe(med_df[['Event-Medaille', 'FirstName', 'LastName', 'Class', 'ClubName', 'Medal_Starts']], hide_index=True, width='stretch')
 
-        # --- TAB 2: CUP-PROGNOSE (ALLES KOMBINIERT) ---
         with tab_prog:
             st.subheader("Übersicht: Cup-Qualifikation (Saison: 6+ Starts)")
             if not prog_df.empty:
-                if df_meld.empty:
-                    st.info("Zeigt den aktuellen Stand der Cup-Qualifikation aus der Ergebnis-Datenbank.")
-                else:
-                    st.success("Kombiniert die alten Ergebnisse mit den neuen Nennungen. Zeigt, wer nach diesem Event die 6 Starts voll haben wird.")
-
                 qual_count = len(prog_df[prog_df['Starts_Gesamt'] >= 6])
                 nah_dran_count = len(prog_df[(prog_df['Starts_Gesamt'] >= 4) & (prog_df['Starts_Gesamt'] < 6)])
 
@@ -370,30 +400,28 @@ try:
                 c2.metric("🟡 Nah dran (4 oder 5 Starts)", nah_dran_count)
 
                 prog_df_sorted = prog_df.sort_values(by=['Starts_Gesamt', 'LastName'], ascending=[False, True])
-
-                st.dataframe(prog_df_sorted[['Prognose Gesamt', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher', 'Starts_Neu', 'Starts_Gesamt']], 
-                             column_config={
-                                 "Starts_Bisher": "Starts Bisher",
-                                 "Starts_Neu": "Starts neu",
-                                 "Starts_Gesamt": "Starts Saison gesamt"
-                             },
-                             width='stretch', hide_index=True)
-
-                csv_prog = prog_df_sorted.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Prognoseliste herunterladen", csv_prog, "cup_prognose.csv", "text/csv")
-            else:
-                st.warning("Keine Athleten der Klassen U10-U14 gefunden.")
+                st.dataframe(prog_df_sorted[['Prognose Gesamt', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher', 'Starts_Neu', 'Starts_Gesamt']], hide_index=True, width='stretch')
 
         # --- TAB 3: GESAMTWERTUNG CUP ---
         with tab_cup:
             if not filtered_df.empty:
                 cup_df, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
                 if not cup_df.empty:
+                    
+                    # Neuer Excel-Download Button
+                    st.success("Hier kannst du das fertig formatierte Endergebnis als Excel-Datei herunterladen:")
+                    excel_data = create_excel_report(cup_df)
+                    st.download_button(
+                        label="📥 Cup-Wertung als formatierte Excel (.xlsx) herunterladen",
+                        data=excel_data,
+                        file_name="Cup_Gesamtwertung_Sortiert.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
                     st.dataframe(cup_df[['Status', 'Fortschritt', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], width='stretch', hide_index=True)
                 else:
                     st.info("Keine Cup-Teilnehmer mit diesen Filtern gefunden.")
 
-        # --- TAB 4: ALLE LEISTUNGEN ---
         with tab_all_perfs:
             if not filtered_df.empty:
                 _, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
@@ -410,7 +438,6 @@ try:
                     styled_df = display_cols_df.style.apply(highlight_counted, axis=1)
                     st.dataframe(styled_df, width='stretch', hide_index=True)
 
-        # --- TAB 5: ROHDATEN ---
         with tab_raw:
             st.write("Ergebnisse in der Datenbank:")
             st.dataframe(filtered_df, width='stretch')
