@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import plotly.express as px
 import numpy as np
 from io import BytesIO
 
@@ -127,7 +126,6 @@ def load_and_clean_data(file):
             file.seek(0)
             df = pd.read_csv(file, sep=',', encoding='latin1')
             
-        # FIX: WEZ (Weitsprung Zone) und WEI (Weitsprung) zusammenführen
         if 'Event' in df.columns:
             df['Event'] = df['Event'].astype(str).str.upper().str.strip()
             df['Event'] = df['Event'].replace('WEZ', 'WEI')
@@ -136,6 +134,12 @@ def load_and_clean_data(file):
     except Exception as e:
         st.error(f"Fehler beim Einlesen: {e}")
         return None
+
+def table_exists(conn, table_name):
+    """Prüft sicher, ob eine Tabelle in SQLite existiert, um Crashes zu vermeiden."""
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT count(name) FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+    return cursor.fetchone()[0] == 1
 
 # --- DATEN AUSWERTUNGEN ---
 def get_cup_data(df):
@@ -189,7 +193,6 @@ def get_cup_data(df):
     return ranking_df, valid_df, all_counted_indices
 
 def create_excel_report(cup_df):
-    """Erstellt einen formatierten Excel-Bericht aus dem Cup-Dataframe."""
     output = BytesIO()
     df_sorted = cup_df.sort_values(by=['Class', 'Gender', 'CupPoints'], ascending=[True, True, False])
     cols_to_keep = ['Class', 'Gender', 'Status', 'Fortschritt', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']
@@ -228,21 +231,20 @@ def create_excel_report(cup_df):
     return output.getvalue()
 
 def calculate_prognosis(df_db, df_meld):
-    """Kombiniert bestehende Ergebnisse mit Meldungen und ist robust gegen halbleere Listen."""
     target_classes = ['U10', 'U12', 'U14']
     
-    # 1. Bisherige Datenbank auswerten
+    # 1. Bisherige Datenbank (Saison-Ergebnisse)
     if not df_db.empty:
         db_filtered = df_db[df_db['Class'].str.contains('|'.join(target_classes), na=False)].copy()
         
-        # Alle Nennungen in der DB zählen (auch DNS, leere Resultate)
+        # Alle Nennungen für Medaillen-Fallback
         all_db_athletes = db_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
             Starts_All_DB=('Event', 'nunique'),
             ClubName=('ClubName', 'first'),
             Class=('Class', 'first')
         ).reset_index()
         
-        # Nur gültige Starts für die Cup-Prognose zählen
+        # Gültige Starts für Cup-Punkte
         valid_db = db_filtered[db_filtered['isValid'] == True]
         valid_athletes = valid_db.groupby(['FirstName', 'LastName', 'Yob']).agg(
             Starts_Bisher=('Event', 'nunique')
@@ -253,7 +255,7 @@ def calculate_prognosis(df_db, df_meld):
     else:
         bisher_athletes = pd.DataFrame(columns=['FirstName', 'LastName', 'Yob', 'Starts_All_DB', 'Starts_Bisher', 'ClubName', 'Class'])
 
-    # 2. Vorschau/Meldungen auswerten
+    # 2. Neue Meldungen (Aktuelles Event)
     if df_meld is not None and not df_meld.empty:
         meld_filtered = df_meld[df_meld['Class'].str.contains('|'.join(target_classes), na=False)].copy()
         meld_athletes = meld_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
@@ -271,13 +273,13 @@ def calculate_prognosis(df_db, df_meld):
         prog_df['ClubName'] = prog_df['ClubName'].fillna(prog_df['ClubName_M'])
         prog_df = prog_df.drop(columns=['Class_M', 'ClubName_M'])
         
-        # Medaillenstarts kommen NUR aus der Meldeliste (Nennungen)
+        # Medaillenstarts kommen exklusiv aus der Meldeliste
         prog_df['Medal_Starts'] = prog_df['Starts_Neu']
     else:
         prog_df = bisher_athletes.copy()
         prog_df['Starts_Neu'] = 0
         
-        # Wenn KEINE Meldeliste da ist, nimm für die Medaillen alle Nennungen aus der Hauptliste
+        # FALLBACK: Wenn KEINE Meldeliste hochgeladen wurde, nehmen wir an, die Hauptliste IST das aktuelle Event
         prog_df['Medal_Starts'] = prog_df['Starts_All_DB']
         
         if prog_df.empty: return pd.DataFrame()
@@ -301,20 +303,20 @@ def calculate_prognosis(df_db, df_meld):
 st.title("🏆 Moderne Leichtathletik-Auswertung")
 
 with st.sidebar:
-    st.header("📤 1. Bisherige Ergebnisse")
-    st.info("Hauptdatenbank: Lädt die tatsächlich erbrachten Ergebnisse.")
-    file_ergebnisse = st.file_uploader("Ergebnisse (results.csv)", type=['csv'], key="res")
-    if file_ergebnisse and st.button("💾 Bisherige Ergebnisse speichern"):
+    st.header("📤 1. Bisherige Ergebnisse (Gesamtsaison)")
+    st.info("Hauptdatenbank: Für die Berechnung der gesamten Saison-Punkte.")
+    file_ergebnisse = st.file_uploader("Saison-Ergebnisse", type=['csv'], key="res")
+    if file_ergebnisse and st.button("💾 Saison-Ergebnisse speichern"):
         raw_df = load_and_clean_data(file_ergebnisse)
         if raw_df is not None:
             raw_df.to_sql('ergebnisse', conn, if_exists='replace', index=False)
             st.success("Ergebnisse gespeichert!")
             st.rerun()
 
-    st.header("📤 2. Nennungen (Optional)")
-    st.info("Optional: Lade eine Meldeliste für einen kommenden Wettkampf hoch.")
-    file_meldungen = st.file_uploader("Nennungen/Meldungen", type=['csv'], key="meld")
-    if file_meldungen and st.button("💾 Meldungen für Prognose speichern"):
+    st.header("📤 2. Nennungen / Aktuelles Event")
+    st.info("Für den Medaillenbedarf des heutigen Wettkampfes.")
+    file_meldungen = st.file_uploader("Aktuelle Liste", type=['csv'], key="meld")
+    if file_meldungen and st.button("💾 Aktuelle Liste speichern"):
         meld_df = load_and_clean_data(file_meldungen)
         if meld_df is not None:
             meld_df.to_sql('meldungen', conn, if_exists='replace', index=False)
@@ -323,35 +325,37 @@ with st.sidebar:
 
     st.divider()
     if st.button("🗑️ Kompletten Speicher leeren"):
-        conn.execute("DROP TABLE IF EXISTS ergebnisse")
-        conn.execute("DROP TABLE IF EXISTS meldungen")
+        # Sicher löschen, falls die Tabellen existieren
+        if table_exists(conn, 'ergebnisse'): conn.execute("DROP TABLE ergebnisse")
+        if table_exists(conn, 'meldungen'): conn.execute("DROP TABLE meldungen")
         st.rerun()
 
 try:
     df_db = pd.DataFrame()
-    try:
+    if table_exists(conn, 'ergebnisse'):
         df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
         if not df_db.empty:
             df_db['Result_Num'] = df_db['Result'].apply(parse_result_to_number)
             df_db['isValid'] = df_db['Result'].apply(is_valid_result)
             df_db['CupPoints'] = df_db.apply(calculate_cup_points, axis=1)
-    except sqlite3.OperationalError:
-        pass
     
     df_meld = pd.DataFrame()
-    try:
+    if table_exists(conn, 'meldungen'):
         df_meld = pd.read_sql('SELECT * FROM meldungen', conn)
-    except sqlite3.OperationalError:
-        pass
 
     if not df_db.empty or not df_meld.empty:
         st.subheader("🔍 Auswertung filtern")
         c1, c2, c3, c4 = st.columns(4)
+        
+        # Kombinierte Filteroptionen aus beiden Tabellen generieren
+        filter_basis = pd.concat([df_db, df_meld], ignore_index=True) if not df_db.empty and not df_meld.empty else (df_db if not df_db.empty else df_meld)
+        
         with c1: f_search = st.text_input("Suchen (Name/Verein):", "")
-        with c2: f_class = st.multiselect("Altersklasse:", sorted(df_db['Class'].dropna().unique().tolist()) if not df_db.empty else [])
-        with c3: f_gender = st.multiselect("Geschlecht:", sorted(df_db['Gender'].dropna().unique().tolist()) if not df_db.empty else [])
-        with c4: f_club = st.multiselect("Verein:", sorted(df_db['ClubName'].dropna().unique().tolist()) if not df_db.empty else [])
+        with c2: f_class = st.multiselect("Altersklasse:", sorted(filter_basis['Class'].dropna().unique().tolist()))
+        with c3: f_gender = st.multiselect("Geschlecht:", sorted(filter_basis['Gender'].dropna().unique().tolist()))
+        with c4: f_club = st.multiselect("Verein:", sorted(filter_basis['ClubName'].dropna().unique().tolist()))
 
+        # Filter auf Hauptdatenbank anwenden (falls vorhanden)
         filtered_df = df_db.copy() if not df_db.empty else pd.DataFrame()
         if not filtered_df.empty:
             if f_class: filtered_df = filtered_df[filtered_df['Class'].isin(f_class)]
@@ -364,7 +368,7 @@ try:
                 ]
 
         tab_med, tab_prog, tab_cup, tab_all_perfs, tab_raw = st.tabs([
-            "🏅 Event-Medaillenbedarf", "🔮 Cup-Prognose", "📊 Gesamtwertung Cup", "🏅 Alle Leistungen & Punkte", "📋 Rohdaten"
+            "🏅 Event-Medaillenbedarf", "🔮 Cup-Prognose", "📊 Gesamtwertung Cup", "🏅 Alle Leistungen", "📋 Rohdaten"
         ])
 
         prog_df = calculate_prognosis(df_db, df_meld)
@@ -412,7 +416,6 @@ try:
             if not filtered_df.empty:
                 cup_df, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
                 if not cup_df.empty:
-                    st.success("Hier kannst du das fertig formatierte Endergebnis als Excel-Datei herunterladen:")
                     excel_data = create_excel_report(cup_df)
                     st.download_button(
                         label="📥 Cup-Wertung als formatierte Excel (.xlsx) herunterladen",
@@ -422,7 +425,9 @@ try:
                     )
                     st.dataframe(cup_df[['Status', 'Fortschritt', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], width='stretch', hide_index=True)
                 else:
-                    st.info("Keine Cup-Teilnehmer mit diesen Filtern gefunden.")
+                    st.info("Die geladene Datei enthält keine gültigen Leistungen für die Cup-Wertung.")
+            else:
+                st.info("Bitte lade unter '1. Bisherige Ergebnisse' eine Datei hoch, um die Cup-Punkte zu berechnen.")
 
         with tab_all_perfs:
             if not filtered_df.empty:
@@ -439,13 +444,20 @@ try:
                     
                     styled_df = display_cols_df.style.apply(highlight_counted, axis=1)
                     st.dataframe(styled_df, width='stretch', hide_index=True)
+            else:
+                st.info("Keine Leistungsdaten in der Hauptdatenbank vorhanden.")
 
         with tab_raw:
-            st.write("Ergebnisse in der Datenbank:")
-            st.dataframe(filtered_df, width='stretch')
+            st.write("Ergebnisse in den Datenbanken:")
+            if not df_db.empty:
+                st.write("**Hauptdatenbank (Saison-Ergebnisse):**")
+                st.dataframe(filtered_df, width='stretch')
+            if not df_meld.empty:
+                st.write("**Aktuelle Liste (Meldungen):**")
+                st.dataframe(df_meld, width='stretch')
 
     else:
-        st.info("Bitte lade CSV-Dateien in der Seitenleiste hoch.")
+        st.info("Bitte lade CSV-Dateien in der Seitenleiste hoch, um zu beginnen.")
 
 except Exception as e:
-    st.error(f"Ein Fehler ist aufgetreten: {e}")
+    st.error(f"Ein unerwarteter Fehler ist aufgetreten: {e}")
