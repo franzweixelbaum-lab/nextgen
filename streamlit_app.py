@@ -126,6 +126,12 @@ def load_and_clean_data(file):
         if df.shape[1] <= 1:
             file.seek(0)
             df = pd.read_csv(file, sep=',', encoding='latin1')
+            
+        # FIX: WEZ (Weitsprung Zone) und WEI (Weitsprung) zusammenführen
+        if 'Event' in df.columns:
+            df['Event'] = df['Event'].astype(str).str.upper().str.strip()
+            df['Event'] = df['Event'].replace('WEZ', 'WEI')
+            
         return df
     except Exception as e:
         st.error(f"Fehler beim Einlesen: {e}")
@@ -185,27 +191,15 @@ def get_cup_data(df):
 def create_excel_report(cup_df):
     """Erstellt einen formatierten Excel-Bericht aus dem Cup-Dataframe."""
     output = BytesIO()
-    
-    # Sortieren nach Klasse (U10 -> U12 -> U14), dann Geschlecht, dann Punkte
     df_sorted = cup_df.sort_values(by=['Class', 'Gender', 'CupPoints'], ascending=[True, True, False])
-    
     cols_to_keep = ['Class', 'Gender', 'Status', 'Fortschritt', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']
     df_export = df_sorted[cols_to_keep].copy()
     
-    # Schöne deutsche Spaltennamen
     df_export = df_export.rename(columns={
-        'Class': 'Altersklasse',
-        'Gender': 'Geschlecht',
-        'Status': 'Qualifikation',
-        'Fortschritt': 'Starts (gewertet)',
-        'CupPoints': 'Punkte',
-        'FirstName': 'Vorname',
-        'LastName': 'Nachname',
-        'ClubName': 'Verein',
-        'EventDetails': 'Details der Leistungen (⭐ in Wertung)'
+        'Class': 'Altersklasse', 'Gender': 'Geschlecht', 'Status': 'Qualifikation',
+        'Fortschritt': 'Starts (gewertet)', 'CupPoints': 'Punkte', 'FirstName': 'Vorname',
+        'LastName': 'Nachname', 'ClubName': 'Verein', 'EventDetails': 'Details der Leistungen (⭐ in Wertung)'
     })
-    
-    # Markdown-Sterne (**) für Excel entfernen, da sie dort nicht gerendert werden
     df_export['Details der Leistungen (⭐ in Wertung)'] = df_export['Details der Leistungen (⭐ in Wertung)'].str.replace('**', '')
 
     writer = pd.ExcelWriter(output, engine='xlsxwriter')
@@ -214,48 +208,54 @@ def create_excel_report(cup_df):
     workbook = writer.book
     worksheet = writer.sheets['Cup_Gesamtwertung']
     
-    # Formate definieren
-    header_format = workbook.add_format({
-        'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
-        'fg_color': '#D7E4BC', 'border': 1
-    })
-    
+    header_format = workbook.add_format({'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center', 'fg_color': '#D7E4BC', 'border': 1})
     cell_format = workbook.add_format({'valign': 'vcenter'})
     points_format = workbook.add_format({'valign': 'vcenter', 'align': 'center', 'bold': True})
     details_format = workbook.add_format({'text_wrap': True, 'valign': 'top'})
     
-    # Headers formatieren
     for col_num, value in enumerate(df_export.columns.values):
         worksheet.write(0, col_num, value, header_format)
         
-    # Spaltenbreiten anpassen
-    worksheet.set_column('A:B', 12, cell_format)   # Klasse, Geschlecht
-    worksheet.set_column('C:C', 18, cell_format)   # Qualifikation
-    worksheet.set_column('D:D', 15, cell_format)   # Fortschritt
-    worksheet.set_column('E:E', 12, points_format) # Punkte (fett, zentriert)
-    worksheet.set_column('F:G', 15, cell_format)   # Vorname, Nachname
-    worksheet.set_column('H:H', 20, cell_format)   # Verein
-    worksheet.set_column('I:I', 50, details_format)# EventDetails (mit Zeilenumbruch)
+    worksheet.set_column('A:B', 12, cell_format)
+    worksheet.set_column('C:C', 18, cell_format)
+    worksheet.set_column('D:D', 15, cell_format)
+    worksheet.set_column('E:E', 12, points_format)
+    worksheet.set_column('F:G', 15, cell_format)
+    worksheet.set_column('H:H', 20, cell_format)
+    worksheet.set_column('I:I', 50, details_format)
     
     writer.close()
     return output.getvalue()
 
 def calculate_prognosis(df_db, df_meld):
-    """Kombiniert bestehende Ergebnisse mit Meldungen."""
+    """Kombiniert bestehende Ergebnisse mit Meldungen und ist robust gegen halbleere Listen."""
     target_classes = ['U10', 'U12', 'U14']
     
+    # 1. Bisherige Datenbank auswerten
     if not df_db.empty:
-        db_filtered = df_db[df_db['Class'].str.contains('|'.join(target_classes), na=False)]
-        bisher_athletes = db_filtered[db_filtered['isValid'] == True].groupby(['FirstName', 'LastName', 'Yob']).agg(
-            Starts_Bisher=('Event', 'nunique'),
+        db_filtered = df_db[df_db['Class'].str.contains('|'.join(target_classes), na=False)].copy()
+        
+        # Alle Nennungen in der DB zählen (auch DNS, leere Resultate)
+        all_db_athletes = db_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
+            Starts_All_DB=('Event', 'nunique'),
             ClubName=('ClubName', 'first'),
             Class=('Class', 'first')
         ).reset_index()
+        
+        # Nur gültige Starts für die Cup-Prognose zählen
+        valid_db = db_filtered[db_filtered['isValid'] == True]
+        valid_athletes = valid_db.groupby(['FirstName', 'LastName', 'Yob']).agg(
+            Starts_Bisher=('Event', 'nunique')
+        ).reset_index()
+        
+        bisher_athletes = pd.merge(all_db_athletes, valid_athletes, on=['FirstName', 'LastName', 'Yob'], how='left')
+        bisher_athletes['Starts_Bisher'] = bisher_athletes['Starts_Bisher'].fillna(0).astype(int)
     else:
-        bisher_athletes = pd.DataFrame(columns=['FirstName', 'LastName', 'Yob', 'Starts_Bisher', 'ClubName', 'Class'])
+        bisher_athletes = pd.DataFrame(columns=['FirstName', 'LastName', 'Yob', 'Starts_All_DB', 'Starts_Bisher', 'ClubName', 'Class'])
 
+    # 2. Vorschau/Meldungen auswerten
     if df_meld is not None and not df_meld.empty:
-        meld_filtered = df_meld[df_meld['Class'].str.contains('|'.join(target_classes), na=False)]
+        meld_filtered = df_meld[df_meld['Class'].str.contains('|'.join(target_classes), na=False)].copy()
         meld_athletes = meld_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
             Starts_Neu=('Event', 'nunique'),
             ClubName_M=('ClubName', 'first'),
@@ -265,15 +265,21 @@ def calculate_prognosis(df_db, df_meld):
         prog_df = pd.merge(bisher_athletes, meld_athletes, on=['FirstName', 'LastName', 'Yob'], how='outer')
         prog_df['Starts_Bisher'] = prog_df['Starts_Bisher'].fillna(0).astype(int)
         prog_df['Starts_Neu'] = prog_df['Starts_Neu'].fillna(0).astype(int)
+        prog_df['Starts_All_DB'] = prog_df['Starts_All_DB'].fillna(0).astype(int)
         
         prog_df['Class'] = prog_df['Class'].fillna(prog_df['Class_M'])
         prog_df['ClubName'] = prog_df['ClubName'].fillna(prog_df['ClubName_M'])
         prog_df = prog_df.drop(columns=['Class_M', 'ClubName_M'])
+        
+        # Medaillenstarts kommen NUR aus der Meldeliste (Nennungen)
         prog_df['Medal_Starts'] = prog_df['Starts_Neu']
     else:
         prog_df = bisher_athletes.copy()
         prog_df['Starts_Neu'] = 0
-        prog_df['Medal_Starts'] = prog_df['Starts_Bisher']
+        
+        # Wenn KEINE Meldeliste da ist, nimm für die Medaillen alle Nennungen aus der Hauptliste
+        prog_df['Medal_Starts'] = prog_df['Starts_All_DB']
+        
         if prog_df.empty: return pd.DataFrame()
 
     prog_df['Starts_Gesamt'] = prog_df['Starts_Bisher'] + prog_df['Starts_Neu']
@@ -402,13 +408,10 @@ try:
                 prog_df_sorted = prog_df.sort_values(by=['Starts_Gesamt', 'LastName'], ascending=[False, True])
                 st.dataframe(prog_df_sorted[['Prognose Gesamt', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher', 'Starts_Neu', 'Starts_Gesamt']], hide_index=True, width='stretch')
 
-        # --- TAB 3: GESAMTWERTUNG CUP ---
         with tab_cup:
             if not filtered_df.empty:
                 cup_df, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
                 if not cup_df.empty:
-                    
-                    # Neuer Excel-Download Button
                     st.success("Hier kannst du das fertig formatierte Endergebnis als Excel-Datei herunterladen:")
                     excel_data = create_excel_report(cup_df)
                     st.download_button(
@@ -417,7 +420,6 @@ try:
                         file_name="Cup_Gesamtwertung_Sortiert.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-                    
                     st.dataframe(cup_df[['Status', 'Fortschritt', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], width='stretch', hide_index=True)
                 else:
                     st.info("Keine Cup-Teilnehmer mit diesen Filtern gefunden.")
