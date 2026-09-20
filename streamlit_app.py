@@ -349,7 +349,6 @@ def get_bestenliste(df):
     return bestenliste_df.sort_values(['Event', 'Class', 'Gender', 'Rang'])
 
 def create_statistics_excel(stats_df, event_stats_df):
-    """Erstellt den Excel-Bericht für den Statistik-Reiter."""
     output = BytesIO()
     writer = pd.ExcelWriter(output, engine='xlsxwriter')
     
@@ -436,9 +435,9 @@ try:
                     filtered_df['LastName'].str.contains(f_search, case=False, na=False)
                 ]
 
-        # REITER ANGEPASST: 9 Tabs insgesamt
-        tab_med, tab_zw, tab_prog, tab_cup, tab_win, tab_best, tab_grafiken, tab_stat, tab_raw = st.tabs([
-            "🏅 Event-Medaillen", "🏆 Zwischenstand", "🔮 Cup-Prognose", "📊 Cup-Wertung", "🥇 Einzelsieger", "📈 Bestenliste", "📊 Grafiken", "📉 Statistiken", "📋 Rohdaten"
+        # REITER ANGEPASST: 10 Tabs insgesamt
+        tab_med, tab_zw, tab_prog, tab_cup, tab_win, tab_best, tab_grafiken, tab_stat, tab_vereine, tab_raw = st.tabs([
+            "🏅 Event-Medaillen", "🏆 Zwischenstand", "🔮 Cup-Prognose", "📊 Cup-Wertung", "🥇 Einzelsieger", "📈 Bestenliste", "📊 Grafiken", "📉 Statistiken", "🏠 Vereine", "📋 Rohdaten"
         ])
 
         prog_df = calculate_prognosis(df_db, df_meld)
@@ -576,7 +575,7 @@ try:
             else:
                 st.info("Lade die Saison-Ergebnisse hoch.")
 
-        # --- NEU: REITER 7: GRAFIKEN (Plotly) ---
+        # --- REITER 7: GRAFIKEN (Plotly) ---
         with tab_grafiken:
             st.subheader("📊 Interaktive Leistungsanalyse")
             if not filtered_df.empty:
@@ -611,14 +610,13 @@ try:
             else:
                 st.info("Bitte Saison-Ergebnisse laden.")
 
-        # --- NEU: REITER 8: STATISTIKEN ---
+        # --- REITER 8: STATISTIKEN ---
         with tab_stat:
             st.subheader("📉 Detaillierte Statistiken")
             if not filtered_df.empty:
                 valid_stats_df = filtered_df[filtered_df['isValid'] == True].dropna(subset=['Result_Num'])
                 if not valid_stats_df.empty:
                     
-                    # Allgemeine Statistiken (Pro Klasse und Geschlecht)
                     stats_data = []
                     for (c_class, c_gender), group in valid_stats_df.groupby(['Class', 'Gender']):
                         num_athletes = len(group.groupby(['FirstName', 'LastName', 'Yob']))
@@ -631,10 +629,8 @@ try:
                     
                     stats_df_export = pd.DataFrame(stats_data).sort_values(['Altersklasse', 'Geschlecht'])
                     
-                    # Disziplinen-Statistiken (Verteilungen, Max, Min, Median)
                     event_stats_data = []
                     for (c_class, c_gender, c_event), group in valid_stats_df.groupby(['Class', 'Gender', 'Event']):
-                        # Runden für eine schöne Ansicht
                         is_run = is_run_event(c_event)
                         best_res = group['Result_Num'].min() if is_run else group['Result_Num'].max()
                         worst_res = group['Result_Num'].max() if is_run else group['Result_Num'].min()
@@ -650,7 +646,6 @@ try:
                         
                     event_stats_df_export = pd.DataFrame(event_stats_data).sort_values(['Altersklasse', 'Geschlecht', 'Disziplin'])
                     
-                    # Download Button
                     excel_stats = create_statistics_excel(stats_df_export, event_stats_df_export)
                     st.download_button(
                         label="📥 Statistiken als formatierte Excel (.xlsx) herunterladen",
@@ -659,7 +654,6 @@ try:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     
-                    # Ansicht im UI
                     c1, c2 = st.columns(2)
                     with c1:
                         st.write("**Allgemeine Teilnehmer-Übersicht:**")
@@ -672,7 +666,50 @@ try:
             else:
                 st.info("Bitte Saison-Ergebnisse laden.")
 
-        # --- REITER 9: ROHDATEN ---
+        # --- NEU: REITER 9: VEREINE ---
+        with tab_vereine:
+            st.subheader("🏠 Allgemeine Vereinsübersicht")
+            st.info("Übersicht aller teilnehmenden Vereine (gemeldete Athleten und tatsächliche Starts).")
+            if not filtered_df.empty:
+                vereine_data = []
+                for club, group in filtered_df.groupby('ClubName'):
+                    num_athletes = len(group.groupby(['FirstName', 'LastName', 'Yob']))
+                    males = len(group[group['Gender'] == 'M'].groupby(['FirstName', 'LastName', 'Yob']))
+                    females = len(group[group['Gender'] == 'W'].groupby(['FirstName', 'LastName', 'Yob']))
+                    
+                    num_nennungen = len(group)
+                    num_starts = len(group[group['isValid'] == True])
+                    
+                    vereine_data.append({
+                        'Verein': club,
+                        'Athleten (Gemeldet)': num_athletes,
+                        'Männlich': males,
+                        'Weiblich': females,
+                        'Nennungen (Gesamt)': num_nennungen,
+                        'Echte Starts (Gültig)': num_starts
+                    })
+                
+                vereine_df_export = pd.DataFrame(vereine_data).sort_values('Athleten (Gemeldet)', ascending=False)
+                
+                # Tabelle anzeigen
+                st.dataframe(vereine_df_export, hide_index=True, width='stretch')
+                
+                # CSV Export
+                csv_vereine = vereine_df_export.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button("📥 Vereinsübersicht (CSV) herunterladen", csv_vereine, "vereinsuebersicht.csv", "text/csv")
+                
+                # Zwei Pie-Charts für visuelle Aufbereitung
+                col_chart1, col_chart2 = st.columns(2)
+                with col_chart1:
+                    fig_vereine = px.pie(vereine_df_export, values='Athleten (Gemeldet)', names='Verein', title='Gemeldete Athleten nach Vereinen')
+                    st.plotly_chart(fig_vereine, use_container_width=True)
+                with col_chart2:
+                    fig_starts = px.pie(vereine_df_export, values='Echte Starts (Gültig)', names='Verein', title='Erbrachte Starts nach Vereinen')
+                    st.plotly_chart(fig_starts, use_container_width=True)
+            else:
+                st.info("Bitte Saison-Ergebnisse laden.")
+
+        # --- REITER 10: ROHDATEN ---
         with tab_raw:
             st.write("Ergebnisse in den Datenbanken:")
             if not df_db.empty:
