@@ -70,6 +70,12 @@ def get_age_group(cls_str):
     if 'U12' in cls_upper: return 'U12'
     return 'U12'
 
+def is_run_event(event_name):
+    """Unterscheidet sicher zwischen Lauf (weniger=besser) und Wurf/Sprung (mehr=besser)."""
+    e = str(event_name).upper()
+    field_keywords = ['WEI', 'HOC', 'VOR', 'BAL', 'KUG', 'SPE', 'DIS', 'STA', 'ZON']
+    return not any(f in e for f in field_keywords)
+
 def calculate_cup_points(row):
     try:
         res = row.get('Result_Num', np.nan)
@@ -136,7 +142,6 @@ def load_and_clean_data(file):
         return None
 
 def table_exists(conn, table_name):
-    """Prüft sicher, ob eine Tabelle in SQLite existiert, um Crashes zu vermeiden."""
     cursor = conn.cursor()
     cursor.execute(f"SELECT count(name) FROM sqlite_master WHERE type='table' AND name='{table_name}'")
     return cursor.fetchone()[0] == 1
@@ -233,18 +238,15 @@ def create_excel_report(cup_df):
 def calculate_prognosis(df_db, df_meld):
     target_classes = ['U10', 'U12', 'U14']
     
-    # 1. Bisherige Datenbank (Saison-Ergebnisse)
     if not df_db.empty:
         db_filtered = df_db[df_db['Class'].str.contains('|'.join(target_classes), na=False)].copy()
         
-        # Alle Nennungen für Medaillen-Fallback
         all_db_athletes = db_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
             Starts_All_DB=('Event', 'nunique'),
             ClubName=('ClubName', 'first'),
             Class=('Class', 'first')
         ).reset_index()
         
-        # Gültige Starts für Cup-Punkte
         valid_db = db_filtered[db_filtered['isValid'] == True]
         valid_athletes = valid_db.groupby(['FirstName', 'LastName', 'Yob']).agg(
             Starts_Bisher=('Event', 'nunique')
@@ -255,7 +257,6 @@ def calculate_prognosis(df_db, df_meld):
     else:
         bisher_athletes = pd.DataFrame(columns=['FirstName', 'LastName', 'Yob', 'Starts_All_DB', 'Starts_Bisher', 'ClubName', 'Class'])
 
-    # 2. Neue Meldungen (Aktuelles Event)
     if df_meld is not None and not df_meld.empty:
         meld_filtered = df_meld[df_meld['Class'].str.contains('|'.join(target_classes), na=False)].copy()
         meld_athletes = meld_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
@@ -273,15 +274,11 @@ def calculate_prognosis(df_db, df_meld):
         prog_df['ClubName'] = prog_df['ClubName'].fillna(prog_df['ClubName_M'])
         prog_df = prog_df.drop(columns=['Class_M', 'ClubName_M'])
         
-        # Medaillenstarts kommen exklusiv aus der Meldeliste
         prog_df['Medal_Starts'] = prog_df['Starts_Neu']
     else:
         prog_df = bisher_athletes.copy()
         prog_df['Starts_Neu'] = 0
-        
-        # FALLBACK: Wenn KEINE Meldeliste hochgeladen wurde, nehmen wir an, die Hauptliste IST das aktuelle Event
         prog_df['Medal_Starts'] = prog_df['Starts_All_DB']
-        
         if prog_df.empty: return pd.DataFrame()
 
     prog_df['Starts_Gesamt'] = prog_df['Starts_Bisher'] + prog_df['Starts_Neu']
@@ -298,6 +295,61 @@ def calculate_prognosis(df_db, df_meld):
     )
     
     return prog_df
+
+def get_winners_list(df):
+    target_classes = ['U10', 'U12', 'U14']
+    df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
+    
+    if 'isValid' not in df_filtered.columns:
+        df_filtered['isValid'] = df_filtered['Result'].apply(is_valid_result)
+        
+    valid_df = df_filtered[df_filtered['isValid'] == True].dropna(subset=['Result_Num'])
+    
+    winners = []
+    for (event, age_class, gender), group in valid_df.groupby(['Event', 'Class', 'Gender']):
+        if is_run_event(event):
+            winner_row = group.loc[group['Result_Num'].idxmin()]
+        else:
+            winner_row = group.loc[group['Result_Num'].idxmax()]
+        winners.append(winner_row)
+        
+    if winners:
+        return pd.DataFrame(winners).sort_values(['Event', 'Class', 'Gender'])
+    return pd.DataFrame()
+
+def get_bestenliste(df):
+    """Erstellt ein komplettes Ranking (Persönliche Bestleistungen) pro Disziplin, Klasse und Geschlecht."""
+    target_classes = ['U10', 'U12', 'U14']
+    df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
+    
+    if 'isValid' not in df_filtered.columns:
+        df_filtered['isValid'] = df_filtered['Result'].apply(is_valid_result)
+        
+    valid_df = df_filtered[df_filtered['isValid'] == True].dropna(subset=['Result_Num'])
+    
+    # 1. Persönliche Bestleistung pro Athlet und Bewerb ermitteln
+    pb_list = []
+    for (event, a_class, gender, fname, lname, yob, club), group in valid_df.groupby(['Event', 'Class', 'Gender', 'FirstName', 'LastName', 'Yob', 'ClubName']):
+        if is_run_event(event):
+            best_idx = group['Result_Num'].idxmin()
+        else:
+            best_idx = group['Result_Num'].idxmax()
+        pb_list.append(group.loc[best_idx])
+        
+    if not pb_list:
+        return pd.DataFrame()
+        
+    pb_df = pd.DataFrame(pb_list)
+    
+    # 2. Ranking innerhalb der Altersklasse/Geschlecht/Bewerb erstellen
+    ranked_list = []
+    for (event, a_class, gender), group in pb_df.groupby(['Event', 'Class', 'Gender']):
+        sorted_group = group.sort_values(by='Result_Num', ascending=is_run_event(event)).copy()
+        sorted_group['Rang'] = range(1, len(sorted_group) + 1)
+        ranked_list.append(sorted_group)
+        
+    bestenliste_df = pd.concat(ranked_list)
+    return bestenliste_df.sort_values(['Event', 'Class', 'Gender', 'Rang'])
 
 # --- DASHBOARD UI ---
 st.title("🏆 Moderne Leichtathletik-Auswertung")
@@ -325,7 +377,6 @@ with st.sidebar:
 
     st.divider()
     if st.button("🗑️ Kompletten Speicher leeren"):
-        # Sicher löschen, falls die Tabellen existieren
         if table_exists(conn, 'ergebnisse'): conn.execute("DROP TABLE ergebnisse")
         if table_exists(conn, 'meldungen'): conn.execute("DROP TABLE meldungen")
         st.rerun()
@@ -347,7 +398,6 @@ try:
         st.subheader("🔍 Auswertung filtern")
         c1, c2, c3, c4 = st.columns(4)
         
-        # Kombinierte Filteroptionen aus beiden Tabellen generieren
         filter_basis = pd.concat([df_db, df_meld], ignore_index=True) if not df_db.empty and not df_meld.empty else (df_db if not df_db.empty else df_meld)
         
         with c1: f_search = st.text_input("Suchen (Name/Verein):", "")
@@ -355,7 +405,6 @@ try:
         with c3: f_gender = st.multiselect("Geschlecht:", sorted(filter_basis['Gender'].dropna().unique().tolist()))
         with c4: f_club = st.multiselect("Verein:", sorted(filter_basis['ClubName'].dropna().unique().tolist()))
 
-        # Filter auf Hauptdatenbank anwenden (falls vorhanden)
         filtered_df = df_db.copy() if not df_db.empty else pd.DataFrame()
         if not filtered_df.empty:
             if f_class: filtered_df = filtered_df[filtered_df['Class'].isin(f_class)]
@@ -367,8 +416,8 @@ try:
                     filtered_df['LastName'].str.contains(f_search, case=False, na=False)
                 ]
 
-        tab_med, tab_prog, tab_cup, tab_all_perfs, tab_raw = st.tabs([
-            "🏅 Event-Medaillenbedarf", "🔮 Cup-Prognose", "📊 Gesamtwertung Cup", "🏅 Alle Leistungen", "📋 Rohdaten"
+        tab_med, tab_zw, tab_prog, tab_cup, tab_win, tab_best, tab_raw = st.tabs([
+            "🏅 Event-Medaillen", "🏆 Zwischenstand", "🔮 Cup-Prognose", "📊 Cup-Wertung", "🥇 Einzelsieger", "📈 Bestenliste", "📋 Rohdaten"
         ])
 
         prog_df = calculate_prognosis(df_db, df_meld)
@@ -382,8 +431,10 @@ try:
             if f_class: prog_df = prog_df[prog_df['Class'].isin(f_class)]
             if f_club: prog_df = prog_df[prog_df['ClubName'].isin(f_club)]
 
+        # --- REITER 1: EVENT-MEDAILLENBEDARF ---
         with tab_med:
-            st.subheader("Übersicht: Medaillenbedarf (1 bis 3+ Starts im Event)")
+            st.subheader("Übersicht: Event-Medaillenbedarf")
+            st.info("Zeigt die Medaillen basierend auf den Nennungen für den aktuellen Wettkampf.")
             if not prog_df.empty:
                 med_df = prog_df[prog_df['Medal_Starts'] > 0].copy()
                 
@@ -399,6 +450,42 @@ try:
 
                 st.dataframe(med_df[['Event-Medaille', 'FirstName', 'LastName', 'Class', 'ClubName', 'Medal_Starts']], hide_index=True, width='stretch')
 
+        # --- REITER 2: ZWISCHENSTAND STARTS ---
+        with tab_zw:
+            st.subheader("Aktueller Zwischenstand (Nur Athleten mit echten Leistungen)")
+            st.info("Filtert Karteileichen (DNS, Leer) heraus. Zeigt alle an, die bisher messbare Leistungen erbracht haben.")
+            if not filtered_df.empty:
+                valid_db = filtered_df[filtered_df['isValid'] == True]
+                if not valid_db.empty:
+                    zwischen_df = valid_db.groupby(['FirstName', 'LastName', 'Yob']).agg(
+                        Starts_Bisher=('Event', 'nunique'),
+                        ClubName=('ClubName', 'first'),
+                        Class=('Class', 'first')
+                    ).reset_index()
+                    
+                    def z_medal(starts):
+                        if starts >= 3: return "🥇 Gold"
+                        elif starts == 2: return "🥈 Silber"
+                        elif starts == 1: return "🥉 Bronze"
+                        return "Keine"
+                        
+                    zwischen_df['Saison-Medaille'] = zwischen_df['Starts_Bisher'].apply(z_medal)
+                    cat_order_z = {"🥇 Gold": 0, "🥈 Silber": 1, "🥉 Bronze": 2}
+                    zwischen_df['Sort'] = zwischen_df['Saison-Medaille'].map(cat_order_z)
+                    zwischen_df = zwischen_df.sort_values(['Sort', 'LastName']).drop(columns=['Sort'])
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("🥇 Gold-Kurs", len(zwischen_df[zwischen_df['Saison-Medaille'] == "🥇 Gold"]))
+                    c2.metric("🥈 Silber-Kurs", len(zwischen_df[zwischen_df['Saison-Medaille'] == "🥈 Silber"]))
+                    c3.metric("🥉 Bronze-Kurs", len(zwischen_df[zwischen_df['Saison-Medaille'] == "🥉 Bronze"]))
+                    
+                    st.dataframe(zwischen_df[['Saison-Medaille', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher']], hide_index=True, width='stretch')
+                else:
+                    st.info("Keine gültigen Leistungen für einen Zwischenstand gefunden.")
+            else:
+                st.info("Lade die Saison-Ergebnisse hoch.")
+
+        # --- REITER 3: CUP-PROGNOSE ---
         with tab_prog:
             st.subheader("Übersicht: Cup-Qualifikation (Saison: 6+ Starts)")
             if not prog_df.empty:
@@ -412,6 +499,7 @@ try:
                 prog_df_sorted = prog_df.sort_values(by=['Starts_Gesamt', 'LastName'], ascending=[False, True])
                 st.dataframe(prog_df_sorted[['Prognose Gesamt', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher', 'Starts_Neu', 'Starts_Gesamt']], hide_index=True, width='stretch')
 
+        # --- REITER 4: GESAMTWERTUNG CUP ---
         with tab_cup:
             if not filtered_df.empty:
                 cup_df, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
@@ -426,27 +514,47 @@ try:
                     st.dataframe(cup_df[['Status', 'Fortschritt', 'Class', 'Gender', 'CupPoints', 'FirstName', 'LastName', 'ClubName', 'EventDetails']], width='stretch', hide_index=True)
                 else:
                     st.info("Die geladene Datei enthält keine gültigen Leistungen für die Cup-Wertung.")
-            else:
-                st.info("Bitte lade unter '1. Bisherige Ergebnisse' eine Datei hoch, um die Cup-Punkte zu berechnen.")
 
-        with tab_all_perfs:
+        # --- REITER 5: EINZELSIEGER ---
+        with tab_win:
+            st.subheader("🏆 Einzelsieger der jeweiligen Bewerbe")
+            st.info("Ermittelt automatisch den Athleten mit der absolut besten Leistung der Saison in seiner/ihrer Altersklasse und Disziplin.")
             if not filtered_df.empty:
-                _, valid_perfs_df, counted_indices = get_cup_data(filtered_df)
-                if not valid_perfs_df.empty:
-                    disp_df = valid_perfs_df[['FirstName', 'LastName', 'Class', 'ClubName', 'Event', 'Result', 'CupPoints']].copy()
-                    disp_df['Gewertet'] = disp_df.index.isin(counted_indices)
-                    disp_df = disp_df.sort_values(['LastName', 'FirstName', 'CupPoints'], ascending=[True, True, False]).reset_index(drop=True)
-                    
-                    display_cols_df = disp_df.drop(columns=['Gewertet'])
-                    def highlight_counted(row):
-                        if disp_df.loc[row.name, 'Gewertet']: return ['font-weight: bold; background-color: rgba(255, 215, 0, 0.15)'] * len(row)
-                        return [''] * len(row)
-                    
-                    styled_df = display_cols_df.style.apply(highlight_counted, axis=1)
-                    st.dataframe(styled_df, width='stretch', hide_index=True)
+                winners_df = get_winners_list(filtered_df)
+                if not winners_df.empty:
+                    st.dataframe(winners_df[['Event', 'Class', 'Gender', 'FirstName', 'LastName', 'ClubName', 'Result']], hide_index=True, width='stretch')
+                    csv_win = winners_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                    st.download_button("📥 Siegerliste herunterladen", csv_win, "einzelsieger.csv", "text/csv")
+                else:
+                    st.warning("Keine gültigen Leistungen gefunden.")
             else:
-                st.info("Keine Leistungsdaten in der Hauptdatenbank vorhanden.")
+                st.info("Lade die Saison-Ergebnisse hoch.")
 
+        # --- NEU: REITER 6: BESTENLISTE (PB-Ranking) ---
+        with tab_best:
+            st.subheader("📈 Saison-Bestenliste (PB-Ranking)")
+            st.info("Zeigt das vollständige Ranking aller Athleten anhand ihrer persönlichen Saisonbestleistung (PB).")
+            if not filtered_df.empty:
+                bestenliste_df = get_bestenliste(filtered_df)
+                if not bestenliste_df.empty:
+                    # Optionaler Filter nur für die Anzeige in der Bestenliste
+                    all_events = sorted(bestenliste_df['Event'].unique())
+                    sel_events = st.multiselect("Nach Disziplin filtern:", all_events, default=[])
+                    
+                    disp_best = bestenliste_df
+                    if sel_events:
+                        disp_best = disp_best[disp_best['Event'].isin(sel_events)]
+                        
+                    st.dataframe(disp_best[['Event', 'Class', 'Gender', 'Rang', 'FirstName', 'LastName', 'ClubName', 'Result']], hide_index=True, width='stretch')
+                    
+                    csv_best = disp_best.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                    st.download_button("📥 Bestenliste (als CSV) herunterladen", csv_best, "saison_bestenliste.csv", "text/csv")
+                else:
+                    st.warning("Keine gültigen Leistungen gefunden.")
+            else:
+                st.info("Lade die Saison-Ergebnisse hoch.")
+
+        # --- REITER 7: ROHDATEN ---
         with tab_raw:
             st.write("Ergebnisse in den Datenbanken:")
             if not df_db.empty:
