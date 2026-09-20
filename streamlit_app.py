@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import numpy as np
+import plotly.express as px
 from io import BytesIO
 
 # --- KONFIGURATION ---
@@ -347,6 +348,29 @@ def get_bestenliste(df):
     bestenliste_df = pd.concat(ranked_list)
     return bestenliste_df.sort_values(['Event', 'Class', 'Gender', 'Rang'])
 
+def create_statistics_excel(stats_df, event_stats_df):
+    """Erstellt den Excel-Bericht für den Statistik-Reiter."""
+    output = BytesIO()
+    writer = pd.ExcelWriter(output, engine='xlsxwriter')
+    
+    if not stats_df.empty:
+        stats_df.to_excel(writer, index=False, sheet_name='Allgemeine_Statistik')
+    if not event_stats_df.empty:
+        event_stats_df.to_excel(writer, index=False, sheet_name='Disziplinen_Statistik')
+        
+    workbook = writer.book
+    header_format = workbook.add_format({'bold': True, 'fg_color': '#D7E4BC', 'border': 1})
+    
+    for sheet_name in writer.sheets:
+        worksheet = writer.sheets[sheet_name]
+        df_to_format = stats_df if sheet_name == 'Allgemeine_Statistik' else event_stats_df
+        for col_num, value in enumerate(df_to_format.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+            worksheet.set_column(col_num, col_num, 15)
+            
+    writer.close()
+    return output.getvalue()
+
 # --- DASHBOARD UI ---
 st.title("🏆 Moderne Leichtathletik-Auswertung")
 
@@ -412,8 +436,9 @@ try:
                     filtered_df['LastName'].str.contains(f_search, case=False, na=False)
                 ]
 
-        tab_med, tab_zw, tab_prog, tab_cup, tab_win, tab_best, tab_raw = st.tabs([
-            "🏅 Event-Medaillen", "🏆 Zwischenstand", "🔮 Cup-Prognose", "📊 Cup-Wertung", "🥇 Einzelsieger", "📈 Bestenliste", "📋 Rohdaten"
+        # REITER ANGEPASST: 9 Tabs insgesamt
+        tab_med, tab_zw, tab_prog, tab_cup, tab_win, tab_best, tab_grafiken, tab_stat, tab_raw = st.tabs([
+            "🏅 Event-Medaillen", "🏆 Zwischenstand", "🔮 Cup-Prognose", "📊 Cup-Wertung", "🥇 Einzelsieger", "📈 Bestenliste", "📊 Grafiken", "📉 Statistiken", "📋 Rohdaten"
         ])
 
         prog_df = calculate_prognosis(df_db, df_meld)
@@ -551,7 +576,103 @@ try:
             else:
                 st.info("Lade die Saison-Ergebnisse hoch.")
 
-        # --- REITER 7: ROHDATEN ---
+        # --- NEU: REITER 7: GRAFIKEN (Plotly) ---
+        with tab_grafiken:
+            st.subheader("📊 Interaktive Leistungsanalyse")
+            if not filtered_df.empty:
+                valid_grafik_df = filtered_df[filtered_df['isValid'] == True].dropna(subset=['Result_Num']).copy()
+                if not valid_grafik_df.empty:
+                    col_a, col_b = st.columns([1, 3])
+                    
+                    with col_a:
+                        g_event = st.selectbox("Disziplin wählen:", sorted(valid_grafik_df['Event'].unique()))
+                        plot_type = st.radio("Grafiktyp:", ["Boxplot (Verteilung)", "Scatter (Einzelwerte)"])
+                        
+                    with col_b:
+                        plot_df = valid_grafik_df[valid_grafik_df['Event'] == g_event]
+                        if plot_type == "Boxplot (Verteilung)":
+                            fig = px.box(
+                                plot_df, x="Class", y="Result_Num", color="Gender", points="all",
+                                hover_data=["FirstName", "LastName", "ClubName", "Result"],
+                                title=f"Ergebnisverteilung für {g_event}",
+                                labels={"Result_Num": "Leistung (Sek/m)", "Class": "Altersklasse"}
+                            )
+                        else:
+                            fig = px.scatter(
+                                plot_df, x="Class", y="Result_Num", color="Gender",
+                                hover_data=["FirstName", "LastName", "ClubName", "Result"],
+                                title=f"Alle Einzelwerte: {g_event}",
+                                labels={"Result_Num": "Leistung (Sek/m)", "Class": "Altersklasse"}
+                            )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Keine numerischen Ergebnisse für Grafiken vorhanden.")
+            else:
+                st.info("Bitte Saison-Ergebnisse laden.")
+
+        # --- NEU: REITER 8: STATISTIKEN ---
+        with tab_stat:
+            st.subheader("📉 Detaillierte Statistiken")
+            if not filtered_df.empty:
+                valid_stats_df = filtered_df[filtered_df['isValid'] == True].dropna(subset=['Result_Num'])
+                if not valid_stats_df.empty:
+                    
+                    # Allgemeine Statistiken (Pro Klasse und Geschlecht)
+                    stats_data = []
+                    for (c_class, c_gender), group in valid_stats_df.groupby(['Class', 'Gender']):
+                        num_athletes = len(group.groupby(['FirstName', 'LastName', 'Yob']))
+                        num_clubs = group['ClubName'].nunique()
+                        num_results = len(group)
+                        stats_data.append({
+                            'Altersklasse': c_class, 'Geschlecht': c_gender,
+                            'Teilnehmer': num_athletes, 'Vereine': num_clubs, 'Erbrachte Leistungen': num_results
+                        })
+                    
+                    stats_df_export = pd.DataFrame(stats_data).sort_values(['Altersklasse', 'Geschlecht'])
+                    
+                    # Disziplinen-Statistiken (Verteilungen, Max, Min, Median)
+                    event_stats_data = []
+                    for (c_class, c_gender, c_event), group in valid_stats_df.groupby(['Class', 'Gender', 'Event']):
+                        # Runden für eine schöne Ansicht
+                        is_run = is_run_event(c_event)
+                        best_res = group['Result_Num'].min() if is_run else group['Result_Num'].max()
+                        worst_res = group['Result_Num'].max() if is_run else group['Result_Num'].min()
+                        med_res = group['Result_Num'].median()
+                        
+                        event_stats_data.append({
+                            'Altersklasse': c_class, 'Geschlecht': c_gender, 'Disziplin': c_event,
+                            'Anzahl Leistungen': len(group),
+                            'Beste Leistung': round(best_res, 2),
+                            'Median': round(med_res, 2),
+                            'Schlechteste Leistung': round(worst_res, 2)
+                        })
+                        
+                    event_stats_df_export = pd.DataFrame(event_stats_data).sort_values(['Altersklasse', 'Geschlecht', 'Disziplin'])
+                    
+                    # Download Button
+                    excel_stats = create_statistics_excel(stats_df_export, event_stats_df_export)
+                    st.download_button(
+                        label="📥 Statistiken als formatierte Excel (.xlsx) herunterladen",
+                        data=excel_stats,
+                        file_name="Auswertung_Statistiken.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
+                    # Ansicht im UI
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.write("**Allgemeine Teilnehmer-Übersicht:**")
+                        st.dataframe(stats_df_export, hide_index=True)
+                    with c2:
+                        st.write("**Statistiken pro Disziplin:**")
+                        st.dataframe(event_stats_df_export, hide_index=True)
+                else:
+                    st.info("Keine gültigen Leistungen für Statistiken gefunden.")
+            else:
+                st.info("Bitte Saison-Ergebnisse laden.")
+
+        # --- REITER 9: ROHDATEN ---
         with tab_raw:
             st.write("Ergebnisse in den Datenbanken:")
             if not df_db.empty:
