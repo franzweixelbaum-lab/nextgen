@@ -71,7 +71,6 @@ def get_age_group(cls_str):
     return 'U12'
 
 def is_run_event(event_name):
-    """Unterscheidet sicher zwischen Lauf (weniger=besser) und Wurf/Sprung (mehr=besser)."""
     e = str(event_name).upper()
     field_keywords = ['WEI', 'HOC', 'VOR', 'BAL', 'KUG', 'SPE', 'DIS', 'STA', 'ZON']
     return not any(f in e for f in field_keywords)
@@ -318,7 +317,6 @@ def get_winners_list(df):
     return pd.DataFrame()
 
 def get_bestenliste(df):
-    """Erstellt ein komplettes Ranking (Persönliche Bestleistungen) pro Disziplin, Klasse und Geschlecht."""
     target_classes = ['U10', 'U12', 'U14']
     df_filtered = df[df['Class'].str.contains('|'.join(target_classes), na=False)].copy()
     
@@ -327,7 +325,6 @@ def get_bestenliste(df):
         
     valid_df = df_filtered[df_filtered['isValid'] == True].dropna(subset=['Result_Num'])
     
-    # 1. Persönliche Bestleistung pro Athlet und Bewerb ermitteln
     pb_list = []
     for (event, a_class, gender, fname, lname, yob, club), group in valid_df.groupby(['Event', 'Class', 'Gender', 'FirstName', 'LastName', 'Yob', 'ClubName']):
         if is_run_event(event):
@@ -341,7 +338,6 @@ def get_bestenliste(df):
         
     pb_df = pd.DataFrame(pb_list)
     
-    # 2. Ranking innerhalb der Altersklasse/Geschlecht/Bewerb erstellen
     ranked_list = []
     for (event, a_class, gender), group in pb_df.groupby(['Event', 'Class', 'Gender']):
         sorted_group = group.sort_values(by='Result_Num', ascending=is_run_event(event)).copy()
@@ -453,9 +449,11 @@ try:
         # --- REITER 2: ZWISCHENSTAND STARTS ---
         with tab_zw:
             st.subheader("Aktueller Zwischenstand (Nur Athleten mit echten Leistungen)")
-            st.info("Filtert Karteileichen (DNS, Leer) heraus. Zeigt alle an, die bisher messbare Leistungen erbracht haben.")
+            st.info("Filtert Karteileichen (DNS, Leer) heraus. Zeigt alle an (U10, U12, U14), die bisher messbare Leistungen erbracht haben.")
             if not filtered_df.empty:
-                valid_db = filtered_df[filtered_df['isValid'] == True]
+                target_classes = ['U10', 'U12', 'U14']
+                valid_db = filtered_df[(filtered_df['isValid'] == True) & (filtered_df['Class'].str.contains('|'.join(target_classes), na=False))]
+                
                 if not valid_db.empty:
                     zwischen_df = valid_db.groupby(['FirstName', 'LastName', 'Yob']).agg(
                         Starts_Bisher=('Event', 'nunique'),
@@ -481,7 +479,7 @@ try:
                     
                     st.dataframe(zwischen_df[['Saison-Medaille', 'FirstName', 'LastName', 'Class', 'ClubName', 'Starts_Bisher']], hide_index=True, width='stretch')
                 else:
-                    st.info("Keine gültigen Leistungen für einen Zwischenstand gefunden.")
+                    st.info("Keine gültigen U10/U12/U14 Leistungen für einen Zwischenstand gefunden.")
             else:
                 st.info("Lade die Saison-Ergebnisse hoch.")
 
@@ -530,14 +528,13 @@ try:
             else:
                 st.info("Lade die Saison-Ergebnisse hoch.")
 
-        # --- NEU: REITER 6: BESTENLISTE (PB-Ranking) ---
+        # --- REITER 6: BESTENLISTE (PB-Ranking) ---
         with tab_best:
             st.subheader("📈 Saison-Bestenliste (PB-Ranking)")
             st.info("Zeigt das vollständige Ranking aller Athleten anhand ihrer persönlichen Saisonbestleistung (PB).")
             if not filtered_df.empty:
                 bestenliste_df = get_bestenliste(filtered_df)
                 if not bestenliste_df.empty:
-                    # Optionaler Filter nur für die Anzeige in der Bestenliste
                     all_events = sorted(bestenliste_df['Event'].unique())
                     sel_events = st.multiselect("Nach Disziplin filtern:", all_events, default=[])
                     
