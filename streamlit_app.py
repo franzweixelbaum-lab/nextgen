@@ -132,10 +132,8 @@ def load_and_clean_data(file):
             file.seek(0)
             df = pd.read_csv(file, sep=',', encoding='latin1')
 
-        # 1. Spaltennamen von Leerzeichen befreien
         df.columns = df.columns.str.strip()
 
-        # 2. Automatische Übersetzung deutscher Spalten in das interne System
         rename_map = {
             'Klasse': 'Class', 'Altersklasse': 'Class', 'AK': 'Class',
             'Verein': 'ClubName', 'Club': 'ClubName',
@@ -150,7 +148,6 @@ def load_and_clean_data(file):
             if ger in df.columns and eng not in df.columns:
                 df = df.rename(columns={ger: eng})
 
-        # 3. Sicherheitsnetz: Falls Spalten komplett fehlen, Platzhalter setzen, damit nichts abstürzt!
         required_cols = {
             'Class': 'U12', 'ClubName': 'Unbekannt', 'FirstName': 'Unbekannt',
             'LastName': 'Unbekannt', 'Yob': 2010, 'Event': '60M', 'Gender': 'M'
@@ -159,7 +156,6 @@ def load_and_clean_data(file):
             if col not in df.columns:
                 df[col] = default_val
 
-        # 4. Datenbereinigung
         if 'Event' in df.columns:
             df['Event'] = df['Event'].astype(str).str.upper().str.strip()
             df['Event'] = df['Event'].replace('WEZ', 'WEI')
@@ -297,7 +293,7 @@ def create_excel_report(cup_df):
 def calculate_prognosis(df_db, df_meld):
     target_classes = ['U10', 'U12', 'U14']
     
-    if not df_db.empty:
+    if not df_db.empty and 'Class' in df_db.columns:
         db_filtered = df_db[df_db['Class'].str.contains('|'.join(target_classes), na=False)].copy()
         all_db_athletes = db_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(Starts_All_DB=('Event', 'nunique'), ClubName=('ClubName', 'first'), Class=('Class', 'first')).reset_index()
         valid_db = db_filtered[db_filtered['isValid'] == True]
@@ -307,7 +303,7 @@ def calculate_prognosis(df_db, df_meld):
     else:
         bisher_athletes = pd.DataFrame(columns=['FirstName', 'LastName', 'Yob', 'Starts_All_DB', 'Starts_Bisher', 'ClubName', 'Class'])
 
-    if df_meld is not None and not df_meld.empty:
+    if df_meld is not None and not df_meld.empty and 'Class' in df_meld.columns:
         meld_filtered = df_meld[df_meld['Class'].str.contains('|'.join(target_classes), na=False)].copy()
         meld_athletes = meld_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(Starts_Neu=('Event', 'nunique'), ClubName_M=('ClubName', 'first'), Class_M=('Class', 'first')).reset_index()
         
@@ -323,7 +319,7 @@ def calculate_prognosis(df_db, df_meld):
     else:
         prog_df = bisher_athletes.copy()
         prog_df['Starts_Neu'] = 0
-        prog_df['Medal_Starts'] = prog_df['Starts_All_DB']
+        prog_df['Medal_Starts'] = prog_df['Starts_All_DB'] if 'Starts_All_DB' in prog_df.columns else 0
         if prog_df.empty: return pd.DataFrame()
 
     prog_df['Starts_Gesamt'] = prog_df['Starts_Bisher'] + prog_df['Starts_Neu']
@@ -455,17 +451,23 @@ with st.sidebar:
         st.rerun()
 
 try:
+    # --- SICHERHEITSNETZ BEIM LADEN DER DATENBANK ---
     df_db = pd.DataFrame()
     if table_exists(conn, 'ergebnisse'):
         df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
         if not df_db.empty:
-            df_db['Result_Num'] = df_db['Result'].apply(parse_result_to_number)
-            df_db['isValid'] = df_db['Result'].apply(is_valid_result)
-            df_db['CupPoints'] = df_db.apply(calculate_cup_points, axis=1)
+            if 'Class' not in df_db.columns:
+                df_db = pd.DataFrame() # Ignoriere beschädigte Datenbank
+            else:
+                df_db['Result_Num'] = df_db['Result'].apply(parse_result_to_number)
+                df_db['isValid'] = df_db['Result'].apply(is_valid_result)
+                df_db['CupPoints'] = df_db.apply(calculate_cup_points, axis=1)
     
     df_meld = pd.DataFrame()
     if table_exists(conn, 'meldungen'):
         df_meld = pd.read_sql('SELECT * FROM meldungen', conn)
+        if not df_meld.empty and 'Class' not in df_meld.columns:
+            df_meld = pd.DataFrame() # Ignoriere beschädigte Datenbank
 
     if not df_db.empty or not df_meld.empty:
         st.subheader("🔍 Auswertung filtern")
@@ -683,21 +685,13 @@ try:
             st.subheader("📅 Jahresvergleich (Teilnehmer pro Verein)")
             if not filtered_df.empty and has_year:
                 st.info("Jeder Athlet (Name & Jahrgang) wird pro Jahr nur 1x gezählt. Filter in der Seitenleiste (z.B. Altersklasse) werden hier berücksichtigt!")
-                
-                def count_unique_athletes(group):
-                    return len(group.drop_duplicates(subset=['FirstName', 'LastName', 'Yob']))
-                    
-                # Gefilterte Daten nutzen
+                def count_unique_athletes(group): return len(group.drop_duplicates(subset=['FirstName', 'LastName', 'Yob']))
                 jahres_data = filtered_df.groupby(['Jahr', 'ClubName']).apply(count_unique_athletes)
                 
-                # Sicherstellen, dass wir einen schönen DataFrame bekommen (Workaround für Pandas Verhalten bei Apply)
-                if isinstance(jahres_data, pd.Series):
-                    jahres_data = jahres_data.reset_index(name='Athleten')
-                elif isinstance(jahres_data, pd.DataFrame):
+                if isinstance(jahres_data, pd.Series): jahres_data = jahres_data.reset_index(name='Athleten')
+                elif isinstance(jahres_data, pd.DataFrame): 
                     jahres_data = jahres_data.reset_index()
-                    # Letzte Spalte umbenennen, falls Pandas sie '0' nennt
-                    if 0 in jahres_data.columns:
-                        jahres_data = jahres_data.rename(columns={0: 'Athleten'})
+                    if 0 in jahres_data.columns: jahres_data = jahres_data.rename(columns={0: 'Athleten'})
                 
                 if not jahres_data.empty and 'Athleten' in jahres_data.columns:
                     pivot_df = jahres_data.pivot(index='ClubName', columns='Jahr', values='Athleten').fillna(0).astype(int)
@@ -706,9 +700,7 @@ try:
                     
                     st.dataframe(pivot_df, hide_index=True, width='stretch')
                     st.download_button("📥 Jahresvergleich herunterladen", pivot_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig'), "jahresvergleich_vereine.csv", "text/csv")
-                    
-                    fig_jahr = px.bar(jahres_data, x='ClubName', y='Athleten', color='Jahr', barmode='group', title="Teilnehmerzahlen über die Jahre (inkl. aktiver Filter)")
-                    st.plotly_chart(fig_jahr, use_container_width=True)
+                    st.plotly_chart(px.bar(jahres_data, x='ClubName', y='Athleten', color='Jahr', barmode='group', title="Teilnehmerzahlen über die Jahre"), use_container_width=True)
                 else:
                     st.warning("Keine Daten zum Vergleichen gefunden.")
             else:
