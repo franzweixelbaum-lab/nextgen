@@ -4,6 +4,7 @@ import sqlite3
 import numpy as np
 import plotly.express as px
 from io import BytesIO
+import traceback
 
 # --- KONFIGURATION ---
 st.set_page_config(page_title="Leichtathletik Auswertung Pro", layout="wide", page_icon="🏆")
@@ -421,43 +422,47 @@ def create_statistics_excel(stats_df, event_stats_df):
     return output.getvalue()
 
 # --- DASHBOARD UI ---
-st.title("🏆 Moderne Leichtathletik-Auswertung")
-
-with st.sidebar:
-    st.header("📤 1. Bisherige Ergebnisse (Gesamtsaison)")
-    st.info("Hauptdatenbank: Für die Berechnung der gesamten Saison-Punkte.")
-    file_ergebnisse = st.file_uploader("Saison-Ergebnisse", type=['csv'], key="res")
-    if file_ergebnisse and st.button("💾 Saison-Ergebnisse speichern"):
-        raw_df = load_and_clean_data(file_ergebnisse)
-        if raw_df is not None:
-            raw_df.to_sql('ergebnisse', conn, if_exists='replace', index=False)
-            st.success("Ergebnisse gespeichert!")
-            st.rerun()
-
-    st.header("📤 2. Nennungen / Aktuelles Event")
-    st.info("Für den Medaillenbedarf des heutigen Wettkampfes.")
-    file_meldungen = st.file_uploader("Aktuelle Liste", type=['csv'], key="meld")
-    if file_meldungen and st.button("💾 Aktuelle Liste speichern"):
-        meld_df = load_and_clean_data(file_meldungen)
-        if meld_df is not None:
-            meld_df.to_sql('meldungen', conn, if_exists='replace', index=False)
-            st.success("Meldungen gespeichert!")
-            st.rerun()
-
-    st.divider()
-    if st.button("🗑️ Kompletten Speicher leeren"):
-        if table_exists(conn, 'ergebnisse'): conn.execute("DROP TABLE ergebnisse")
-        if table_exists(conn, 'meldungen'): conn.execute("DROP TABLE meldungen")
-        st.rerun()
-
 try:
-    # --- SICHERHEITSNETZ BEIM LADEN DER DATENBANK ---
+    st.title("🏆 Moderne Leichtathletik-Auswertung")
+
+    with st.sidebar:
+        st.header("📤 1. Bisherige Ergebnisse (Gesamtsaison)")
+        st.info("Hauptdatenbank: Für die Berechnung der gesamten Saison-Punkte.")
+        file_ergebnisse = st.file_uploader("Saison-Ergebnisse", type=['csv'], key="res")
+        if file_ergebnisse and st.button("💾 Saison-Ergebnisse speichern"):
+            raw_df = load_and_clean_data(file_ergebnisse)
+            if raw_df is not None:
+                raw_df.to_sql('ergebnisse', conn, if_exists='replace', index=False)
+                st.success("Ergebnisse gespeichert!")
+                st.rerun()
+
+        st.header("📤 2. Nennungen / Aktuelles Event")
+        st.info("Für den Medaillenbedarf des heutigen Wettkampfes.")
+        file_meldungen = st.file_uploader("Aktuelle Liste", type=['csv'], key="meld")
+        if file_meldungen and st.button("💾 Aktuelle Liste speichern"):
+            meld_df = load_and_clean_data(file_meldungen)
+            if meld_df is not None:
+                meld_df.to_sql('meldungen', conn, if_exists='replace', index=False)
+                st.success("Meldungen gespeichert!")
+                st.rerun()
+
+        st.divider()
+        if st.button("🗑️ Kompletten Speicher leeren"):
+            if table_exists(conn, 'ergebnisse'): conn.execute("DROP TABLE ergebnisse")
+            if table_exists(conn, 'meldungen'): conn.execute("DROP TABLE meldungen")
+            st.rerun()
+            
+        # NEU: Die gewünschte Versionsnummer in der Sidebar!
+        st.divider()
+        st.caption("v1.1.0 - Robustheit & Fehleranalyse")
+
+    # --- DATENBANK LADEN ---
     df_db = pd.DataFrame()
     if table_exists(conn, 'ergebnisse'):
         df_db = pd.read_sql('SELECT * FROM ergebnisse', conn)
         if not df_db.empty:
             if 'Class' not in df_db.columns:
-                df_db = pd.DataFrame() # Ignoriere beschädigte Datenbank
+                df_db = pd.DataFrame() 
             else:
                 df_db['Result_Num'] = df_db['Result'].apply(parse_result_to_number)
                 df_db['isValid'] = df_db['Result'].apply(is_valid_result)
@@ -467,7 +472,7 @@ try:
     if table_exists(conn, 'meldungen'):
         df_meld = pd.read_sql('SELECT * FROM meldungen', conn)
         if not df_meld.empty and 'Class' not in df_meld.columns:
-            df_meld = pd.DataFrame() # Ignoriere beschädigte Datenbank
+            df_meld = pd.DataFrame() 
 
     if not df_db.empty or not df_meld.empty:
         st.subheader("🔍 Auswertung filtern")
@@ -635,7 +640,13 @@ try:
                         if has_year: stats_dict['Jahr'] = keys[0]
                         stats_data.append(stats_dict)
                     
-                    stats_df_export = pd.DataFrame(stats_data).sort_values(stats_group_cols)
+                    # BUGFIX: Der Sortier-Befehl muss die DEUTSCHEN Namen nutzen, nicht die englischen 'Class' / 'Gender'
+                    sort_stats = ['Altersklasse', 'Geschlecht']
+                    if has_year: sort_stats = ['Jahr'] + sort_stats
+                    
+                    stats_df_export = pd.DataFrame(stats_data)
+                    if not stats_df_export.empty:
+                        stats_df_export = stats_df_export.sort_values(sort_stats)
                     
                     event_stats_data = []
                     ev_group_cols = ['Class', 'Gender', 'Event']
@@ -650,7 +661,13 @@ try:
                         if has_year: ev_dict['Jahr'] = keys[0]
                         event_stats_data.append(ev_dict)
                         
-                    event_stats_df_export = pd.DataFrame(event_stats_data).sort_values(ev_group_cols)
+                    # BUGFIX 2: Auch hier die DEUTSCHEN Namen für das Sorting nutzen
+                    sort_ev = ['Altersklasse', 'Geschlecht', 'Disziplin']
+                    if has_year: sort_ev = ['Jahr'] + sort_ev
+                    
+                    event_stats_df_export = pd.DataFrame(event_stats_data)
+                    if not event_stats_df_export.empty:
+                        event_stats_df_export = event_stats_df_export.sort_values(sort_ev)
                     
                     st.download_button("📥 Statistiken (Excel) herunterladen", create_statistics_excel(stats_df_export, event_stats_df_export), "Statistiken.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                     c1, c2 = st.columns(2)
@@ -673,7 +690,11 @@ try:
                     vereine_data.append(v_dict)
                 
                 v_sort = ['Athleten (Gemeldet)'] if not has_year else ['Jahr', 'Athleten (Gemeldet)']
-                vereine_df_export = pd.DataFrame(vereine_data).sort_values(v_sort, ascending=[False] if not has_year else [False, False])
+                
+                vereine_df_export = pd.DataFrame(vereine_data)
+                if not vereine_df_export.empty:
+                    vereine_df_export = vereine_df_export.sort_values(v_sort, ascending=[False] if not has_year else [False, False])
+                    
                 st.dataframe(vereine_df_export, hide_index=True, width='stretch')
                 
                 if not has_year or len(filtered_df['Jahr'].unique()) == 1:
@@ -751,5 +772,8 @@ try:
     else:
         st.info("Bitte lade CSV-Dateien in der Seitenleiste hoch, um zu beginnen.")
 
+# NEU: Das von dir gewünschte ausführliche Fehlerprotokoll (Stacktrace)
 except Exception as e:
     st.error(f"Ein unerwarteter Fehler ist aufgetreten: {e}")
+    with st.expander("Fehlerdetails anzeigen (für Entwickler)"):
+        st.code(traceback.format_exc(), language="text")
