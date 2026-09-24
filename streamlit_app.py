@@ -131,16 +131,42 @@ def load_and_clean_data(file):
         if df.shape[1] <= 1:
             file.seek(0)
             df = pd.read_csv(file, sep=',', encoding='latin1')
-            
+
+        # 1. Spaltennamen von Leerzeichen befreien
+        df.columns = df.columns.str.strip()
+
+        # 2. Automatische Übersetzung deutscher Spalten in das interne System
+        rename_map = {
+            'Klasse': 'Class', 'Altersklasse': 'Class', 'AK': 'Class',
+            'Verein': 'ClubName', 'Club': 'ClubName',
+            'Vorname': 'FirstName', 
+            'Nachname': 'LastName', 'Name': 'LastName',
+            'Jahrgang': 'Yob', 'JG': 'Yob',
+            'Bewerb': 'Event', 'Disziplin': 'Event',
+            'Ergebnis': 'Result', 'Leistung': 'Result', 'Zeit': 'Result', 'Weite': 'Result',
+            'Geschlecht': 'Gender', 'M/W': 'Gender'
+        }
+        for ger, eng in rename_map.items():
+            if ger in df.columns and eng not in df.columns:
+                df = df.rename(columns={ger: eng})
+
+        # 3. Sicherheitsnetz: Falls Spalten komplett fehlen, Platzhalter setzen, damit nichts abstürzt!
+        required_cols = {
+            'Class': 'U12', 'ClubName': 'Unbekannt', 'FirstName': 'Unbekannt',
+            'LastName': 'Unbekannt', 'Yob': 2010, 'Event': '60M', 'Gender': 'M'
+        }
+        for col, default_val in required_cols.items():
+            if col not in df.columns:
+                df[col] = default_val
+
+        # 4. Datenbereinigung
         if 'Event' in df.columns:
             df['Event'] = df['Event'].astype(str).str.upper().str.strip()
             df['Event'] = df['Event'].replace('WEZ', 'WEI')
             
-        # Optionales Jahr bereinigen, falls vorhanden
         if 'Jahr' in df.columns:
             df['Jahr'] = df['Jahr'].fillna('Unbekannt').astype(str)
             df['Jahr'] = df['Jahr'].replace('0.0', 'Unbekannt').replace('0', 'Unbekannt')
-            # Endung .0 entfernen, falls es als float gelesen wurde
             df['Jahr'] = df['Jahr'].apply(lambda x: x.split('.')[0] if '.' in str(x) else x)
             
         return df
@@ -162,13 +188,11 @@ def get_cup_data(df):
     rankings = []
     all_counted_indices = set()
     
-    # Gruppieren nach Jahr, falls vorhanden
     group_cols = ['FirstName', 'LastName', 'Yob', 'ClubName', 'Gender', 'Class']
     if 'Jahr' in valid_df.columns:
         group_cols.append('Jahr')
         
     for group_keys, group in valid_df.groupby(group_cols):
-        # Entpacken dynamisch je nachdem ob Jahr dabei ist
         if 'Jahr' in valid_df.columns:
             fname, lname, yob, club, gender, a_class, jahr = group_keys
         else:
@@ -275,18 +299,9 @@ def calculate_prognosis(df_db, df_meld):
     
     if not df_db.empty:
         db_filtered = df_db[df_db['Class'].str.contains('|'.join(target_classes), na=False)].copy()
-        
-        all_db_athletes = db_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
-            Starts_All_DB=('Event', 'nunique'),
-            ClubName=('ClubName', 'first'),
-            Class=('Class', 'first')
-        ).reset_index()
-        
+        all_db_athletes = db_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(Starts_All_DB=('Event', 'nunique'), ClubName=('ClubName', 'first'), Class=('Class', 'first')).reset_index()
         valid_db = db_filtered[db_filtered['isValid'] == True]
-        valid_athletes = valid_db.groupby(['FirstName', 'LastName', 'Yob']).agg(
-            Starts_Bisher=('Event', 'nunique')
-        ).reset_index()
-        
+        valid_athletes = valid_db.groupby(['FirstName', 'LastName', 'Yob']).agg(Starts_Bisher=('Event', 'nunique')).reset_index()
         bisher_athletes = pd.merge(all_db_athletes, valid_athletes, on=['FirstName', 'LastName', 'Yob'], how='left')
         bisher_athletes['Starts_Bisher'] = bisher_athletes['Starts_Bisher'].fillna(0).astype(int)
     else:
@@ -294,11 +309,7 @@ def calculate_prognosis(df_db, df_meld):
 
     if df_meld is not None and not df_meld.empty:
         meld_filtered = df_meld[df_meld['Class'].str.contains('|'.join(target_classes), na=False)].copy()
-        meld_athletes = meld_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(
-            Starts_Neu=('Event', 'nunique'),
-            ClubName_M=('ClubName', 'first'),
-            Class_M=('Class', 'first')
-        ).reset_index()
+        meld_athletes = meld_filtered.groupby(['FirstName', 'LastName', 'Yob']).agg(Starts_Neu=('Event', 'nunique'), ClubName_M=('ClubName', 'first'), Class_M=('Class', 'first')).reset_index()
         
         prog_df = pd.merge(bisher_athletes, meld_athletes, on=['FirstName', 'LastName', 'Yob'], how='outer')
         prog_df['Starts_Bisher'] = prog_df['Starts_Bisher'].fillna(0).astype(int)
@@ -308,7 +319,6 @@ def calculate_prognosis(df_db, df_meld):
         prog_df['Class'] = prog_df['Class'].fillna(prog_df['Class_M'])
         prog_df['ClubName'] = prog_df['ClubName'].fillna(prog_df['ClubName_M'])
         prog_df = prog_df.drop(columns=['Class_M', 'ClubName_M'])
-        
         prog_df['Medal_Starts'] = prog_df['Starts_Neu']
     else:
         prog_df = bisher_athletes.copy()
@@ -340,7 +350,6 @@ def get_winners_list(df):
         
     valid_df = df_filtered[df_filtered['isValid'] == True].dropna(subset=['Result_Num'])
     
-    # Gruppieren mit Jahr, falls vorhanden
     group_cols = ['Event', 'Class', 'Gender']
     if 'Jahr' in valid_df.columns:
         group_cols = ['Jahr'] + group_cols
@@ -348,10 +357,8 @@ def get_winners_list(df):
     winners = []
     for keys, group in valid_df.groupby(group_cols):
         event = keys[0] if 'Jahr' not in valid_df.columns else keys[1]
-        if is_run_event(event):
-            winner_row = group.loc[group['Result_Num'].idxmin()]
-        else:
-            winner_row = group.loc[group['Result_Num'].idxmax()]
+        if is_run_event(event): winner_row = group.loc[group['Result_Num'].idxmin()]
+        else: winner_row = group.loc[group['Result_Num'].idxmax()]
         winners.append(winner_row)
         
     if winners:
@@ -369,7 +376,6 @@ def get_bestenliste(df):
         
     valid_df = df_filtered[df_filtered['isValid'] == True].dropna(subset=['Result_Num'])
     
-    # Persönliche Bestleistung berechnen (Optional pro Jahr, falls vorhanden)
     pb_group_cols = ['Event', 'Class', 'Gender', 'FirstName', 'LastName', 'Yob', 'ClubName']
     if 'Jahr' in valid_df.columns: pb_group_cols.append('Jahr')
         
@@ -492,7 +498,6 @@ try:
                     filtered_df['LastName'].str.contains(f_search, case=False, na=False)
                 ]
 
-        # REITER ANGEPASST: 12 Tabs insgesamt!
         tab_med, tab_zw, tab_prog, tab_cup, tab_win, tab_best, tab_grafiken, tab_stat, tab_vereine, tab_jahr, tab_dyn, tab_raw = st.tabs([
             "🏅 Event-Medaillen", "🏆 Zwischenstand", "🔮 Prognose", "📊 Cup-Wertung", "🥇 Einzelsieger", "📈 Bestenliste", "📊 Grafiken", "📉 Statistiken", "🏠 Vereine", "📅 Jahresvergleich", "⚙️ Dynamisch", "📋 Rohdaten"
         ])
@@ -507,11 +512,9 @@ try:
                 ]
             if f_class: prog_df = prog_df[prog_df['Class'].isin(f_class)]
             if f_club: prog_df = prog_df[prog_df['ClubName'].isin(f_club)]
-            # Bei der Prognose macht der Jahresfilter meistens Sinn, falls man historische Prognosen anschauen will:
             if has_year and f_year and 'Jahr' in prog_df.columns: 
                 prog_df = prog_df[prog_df['Jahr'].isin(f_year)]
 
-        # --- 1 bis 9 --- (identisch geblieben)
         with tab_med:
             st.subheader("Übersicht: Event-Medaillenbedarf")
             if not prog_df.empty:
@@ -676,20 +679,27 @@ try:
                     with col_chart1: st.plotly_chart(px.pie(vereine_df_export, values='Athleten (Gemeldet)', names='Verein', title='Gemeldete Athleten'), use_container_width=True)
                     with col_chart2: st.plotly_chart(px.pie(vereine_df_export, values='Gültige Starts', names='Verein', title='Erbrachte Starts'), use_container_width=True)
 
-        # --- NEU: REITER 10: JAHRESVERGLEICH ---
         with tab_jahr:
             st.subheader("📅 Jahresvergleich (Teilnehmer pro Verein)")
-            if not df_db.empty and has_year:
-                st.info("Jeder Athlet (Kombination aus Name & Jahrgang) wird hier pro Jahr nur exakt einmal gezählt, egal wie viele Starts er/sie hatte.")
+            if not filtered_df.empty and has_year:
+                st.info("Jeder Athlet (Name & Jahrgang) wird pro Jahr nur 1x gezählt. Filter in der Seitenleiste (z.B. Altersklasse) werden hier berücksichtigt!")
                 
-                # Berechnung der eindeutigen Athleten pro Jahr und Verein
                 def count_unique_athletes(group):
                     return len(group.drop_duplicates(subset=['FirstName', 'LastName', 'Yob']))
                     
-                jahres_data = df_db.groupby(['Jahr', 'ClubName']).apply(count_unique_athletes).reset_index(name='Athleten')
+                # Gefilterte Daten nutzen
+                jahres_data = filtered_df.groupby(['Jahr', 'ClubName']).apply(count_unique_athletes)
                 
-                if not jahres_data.empty:
-                    # Pivot Tabelle erstellen (Vereine als Zeilen, Jahre als Spalten)
+                # Sicherstellen, dass wir einen schönen DataFrame bekommen (Workaround für Pandas Verhalten bei Apply)
+                if isinstance(jahres_data, pd.Series):
+                    jahres_data = jahres_data.reset_index(name='Athleten')
+                elif isinstance(jahres_data, pd.DataFrame):
+                    jahres_data = jahres_data.reset_index()
+                    # Letzte Spalte umbenennen, falls Pandas sie '0' nennt
+                    if 0 in jahres_data.columns:
+                        jahres_data = jahres_data.rename(columns={0: 'Athleten'})
+                
+                if not jahres_data.empty and 'Athleten' in jahres_data.columns:
                     pivot_df = jahres_data.pivot(index='ClubName', columns='Jahr', values='Athleten').fillna(0).astype(int)
                     pivot_df['Gesamt (Alle Jahre)'] = pivot_df.sum(axis=1)
                     pivot_df = pivot_df.sort_values('Gesamt (Alle Jahre)', ascending=False).reset_index()
@@ -697,56 +707,46 @@ try:
                     st.dataframe(pivot_df, hide_index=True, width='stretch')
                     st.download_button("📥 Jahresvergleich herunterladen", pivot_df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig'), "jahresvergleich_vereine.csv", "text/csv")
                     
-                    # Interaktives Balkendiagramm
-                    fig_jahr = px.bar(jahres_data, x='ClubName', y='Athleten', color='Jahr', barmode='group', title="Vergleich der Teilnehmerzahlen über die Jahre")
+                    fig_jahr = px.bar(jahres_data, x='ClubName', y='Athleten', color='Jahr', barmode='group', title="Teilnehmerzahlen über die Jahre (inkl. aktiver Filter)")
                     st.plotly_chart(fig_jahr, use_container_width=True)
+                else:
+                    st.warning("Keine Daten zum Vergleichen gefunden.")
             else:
-                st.warning("Die aktuellen Daten enthalten keine Jahres-Spalte oder die Datenbank ist leer. Bitte lade eine CSV mit einer Spalte 'Jahr' hoch.")
+                st.warning("Die hochgeladenen Daten enthalten keine Jahres-Spalte oder die aktiven Filter haben alle Daten ausgeblendet.")
 
-        # --- NEU: REITER 11: DYNAMISCHE AUSWERTUNG ---
         with tab_dyn:
             st.subheader("⚙️ Dynamischer Auswertungs-Baukasten")
             st.info("Baue dir deine eigene Tabelle! Wähle, wonach du gruppieren möchtest und welcher Wert berechnet werden soll.")
             if not filtered_df.empty:
                 valid_cols_for_grouping = [c for c in filtered_df.columns if c not in ['Result', 'Result_Num', 'CupPoints', 'isValid', 'NotCompetitive']]
-                
                 col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    sel_groups = st.multiselect("Gruppieren nach (Zeilen):", valid_cols_for_grouping, default=["ClubName"] if "ClubName" in valid_cols_for_grouping else [])
-                with col_d2:
-                    sel_calc = st.selectbox("Berechnung (Werte):", [
-                        "Anzahl Starts (Gesamt)", 
-                        "Anzahl eindeutiger Athleten", 
-                        "Summe Cup-Punkte", 
-                        "Durchschnitt Cup-Punkte"
-                    ])
+                with col_d1: sel_groups = st.multiselect("Gruppieren nach (Zeilen):", valid_cols_for_grouping, default=["ClubName"] if "ClubName" in valid_cols_for_grouping else [])
+                with col_d2: sel_calc = st.selectbox("Berechnung (Werte):", ["Anzahl Starts (Gesamt)", "Anzahl eindeutiger Athleten", "Summe Cup-Punkte", "Durchschnitt Cup-Punkte"])
                 
                 if sel_groups:
                     dyn_df = filtered_df.copy()
-                    
                     if sel_calc == "Anzahl Starts (Gesamt)":
                         result_df = dyn_df.groupby(sel_groups).size().reset_index(name='Starts')
-                    
                     elif sel_calc == "Anzahl eindeutiger Athleten":
                         def count_unique(x): return len(x.drop_duplicates(subset=['FirstName', 'LastName', 'Yob']))
-                        result_df = dyn_df.groupby(sel_groups).apply(count_unique).reset_index(name='Athleten')
-                        
+                        result_df = dyn_df.groupby(sel_groups).apply(count_unique)
+                        if isinstance(result_df, pd.Series): result_df = result_df.reset_index(name='Athleten')
+                        elif isinstance(result_df, pd.DataFrame): 
+                            result_df = result_df.reset_index()
+                            if 0 in result_df.columns: result_df = result_df.rename(columns={0: 'Athleten'})
                     elif sel_calc == "Summe Cup-Punkte":
                         result_df = dyn_df.groupby(sel_groups)['CupPoints'].sum().reset_index(name='Punkte (Summe)')
-                        
                     elif sel_calc == "Durchschnitt Cup-Punkte":
                         result_df = dyn_df[dyn_df['CupPoints'] > 0].groupby(sel_groups)['CupPoints'].mean().round(1).reset_index(name='Punkte (Ø)')
 
-                    st.dataframe(result_df.sort_values(result_df.columns[-1], ascending=False), hide_index=True, width='stretch')
-                    
-                    # Kleiner Bonus: Dynamischer Plot
-                    if len(sel_groups) == 1:
-                        fig_dyn = px.bar(result_df, x=sel_groups[0], y=result_df.columns[-1], title=f"{sel_calc} nach {sel_groups[0]}")
-                        st.plotly_chart(fig_dyn, use_container_width=True)
+                    if not result_df.empty and result_df.columns[-1] in result_df.columns:
+                        st.dataframe(result_df.sort_values(result_df.columns[-1], ascending=False), hide_index=True, width='stretch')
+                        if len(sel_groups) == 1:
+                            fig_dyn = px.bar(result_df, x=sel_groups[0], y=result_df.columns[-1], title=f"{sel_calc} nach {sel_groups[0]}")
+                            st.plotly_chart(fig_dyn, use_container_width=True)
                 else:
                     st.warning("Bitte mindestens eine Spalte zum Gruppieren auswählen.")
 
-        # --- REITER 12: ROHDATEN ---
         with tab_raw:
             st.write("Ergebnisse in den Datenbanken:")
             if not df_db.empty:
