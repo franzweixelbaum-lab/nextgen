@@ -452,9 +452,8 @@ try:
             if table_exists(conn, 'meldungen'): conn.execute("DROP TABLE meldungen")
             st.rerun()
             
-        # NEU: Die gewünschte Versionsnummer in der Sidebar!
         st.divider()
-        st.caption("v1.1.0 - Robustheit & Fehleranalyse")
+        st.caption("v1.1.1 - Pandas 3.0 Fix")
 
     # --- DATENBANK LADEN ---
     df_db = pd.DataFrame()
@@ -635,12 +634,11 @@ try:
                     
                     stats_data = []
                     for keys, group in valid_stats_df.groupby(stats_group_cols):
-                        num_athletes = len(group.groupby(['FirstName', 'LastName', 'Yob']))
+                        num_athletes = len(group[['FirstName', 'LastName', 'Yob']].drop_duplicates())
                         stats_dict = {'Altersklasse': keys[0] if not has_year else keys[1], 'Geschlecht': keys[1] if not has_year else keys[2], 'Teilnehmer': num_athletes, 'Vereine': group['ClubName'].nunique(), 'Starts': len(group)}
                         if has_year: stats_dict['Jahr'] = keys[0]
                         stats_data.append(stats_dict)
                     
-                    # BUGFIX: Der Sortier-Befehl muss die DEUTSCHEN Namen nutzen, nicht die englischen 'Class' / 'Gender'
                     sort_stats = ['Altersklasse', 'Geschlecht']
                     if has_year: sort_stats = ['Jahr'] + sort_stats
                     
@@ -661,7 +659,6 @@ try:
                         if has_year: ev_dict['Jahr'] = keys[0]
                         event_stats_data.append(ev_dict)
                         
-                    # BUGFIX 2: Auch hier die DEUTSCHEN Namen für das Sorting nutzen
                     sort_ev = ['Altersklasse', 'Geschlecht', 'Disziplin']
                     if has_year: sort_ev = ['Jahr'] + sort_ev
                     
@@ -682,9 +679,9 @@ try:
                 vereine_data = []
                 for keys, group in filtered_df.groupby(v_group_cols):
                     club = keys if not has_year else keys[1]
-                    num_athletes = len(group.groupby(['FirstName', 'LastName', 'Yob']))
-                    males = len(group[group['Gender'] == 'M'].groupby(['FirstName', 'LastName', 'Yob']))
-                    females = len(group[group['Gender'] == 'W'].groupby(['FirstName', 'LastName', 'Yob']))
+                    num_athletes = len(group[['FirstName', 'LastName', 'Yob']].drop_duplicates())
+                    males = len(group[group['Gender'] == 'M'][['FirstName', 'LastName', 'Yob']].drop_duplicates())
+                    females = len(group[group['Gender'] == 'W'][['FirstName', 'LastName', 'Yob']].drop_duplicates())
                     v_dict = {'Verein': club, 'Athleten (Gemeldet)': num_athletes, 'Männlich': males, 'Weiblich': females, 'Nennungen': len(group), 'Gültige Starts': len(group[group['isValid'] == True])}
                     if has_year: v_dict['Jahr'] = keys[0]
                     vereine_data.append(v_dict)
@@ -706,13 +703,10 @@ try:
             st.subheader("📅 Jahresvergleich (Teilnehmer pro Verein)")
             if not filtered_df.empty and has_year:
                 st.info("Jeder Athlet (Name & Jahrgang) wird pro Jahr nur 1x gezählt. Filter in der Seitenleiste (z.B. Altersklasse) werden hier berücksichtigt!")
-                def count_unique_athletes(group): return len(group.drop_duplicates(subset=['FirstName', 'LastName', 'Yob']))
-                jahres_data = filtered_df.groupby(['Jahr', 'ClubName']).apply(count_unique_athletes)
                 
-                if isinstance(jahres_data, pd.Series): jahres_data = jahres_data.reset_index(name='Athleten')
-                elif isinstance(jahres_data, pd.DataFrame): 
-                    jahres_data = jahres_data.reset_index()
-                    if 0 in jahres_data.columns: jahres_data = jahres_data.rename(columns={0: 'Athleten'})
+                # BUGFIX: Komplett ohne '.apply()', rein vektorisiert!
+                subset_jahr = ['Jahr', 'ClubName', 'FirstName', 'LastName', 'Yob']
+                jahres_data = filtered_df.drop_duplicates(subset=subset_jahr).groupby(['Jahr', 'ClubName']).size().reset_index(name='Athleten')
                 
                 if not jahres_data.empty and 'Athleten' in jahres_data.columns:
                     pivot_df = jahres_data.pivot(index='ClubName', columns='Jahr', values='Athleten').fillna(0).astype(int)
@@ -741,12 +735,9 @@ try:
                     if sel_calc == "Anzahl Starts (Gesamt)":
                         result_df = dyn_df.groupby(sel_groups).size().reset_index(name='Starts')
                     elif sel_calc == "Anzahl eindeutiger Athleten":
-                        def count_unique(x): return len(x.drop_duplicates(subset=['FirstName', 'LastName', 'Yob']))
-                        result_df = dyn_df.groupby(sel_groups).apply(count_unique)
-                        if isinstance(result_df, pd.Series): result_df = result_df.reset_index(name='Athleten')
-                        elif isinstance(result_df, pd.DataFrame): 
-                            result_df = result_df.reset_index()
-                            if 0 in result_df.columns: result_df = result_df.rename(columns={0: 'Athleten'})
+                        # BUGFIX: Komplett ohne '.apply()', immun gegen Pandas Updates!
+                        subset_dyn = list(set(sel_groups + ['FirstName', 'LastName', 'Yob']))
+                        result_df = dyn_df.drop_duplicates(subset=subset_dyn).groupby(sel_groups).size().reset_index(name='Athleten')
                     elif sel_calc == "Summe Cup-Punkte":
                         result_df = dyn_df.groupby(sel_groups)['CupPoints'].sum().reset_index(name='Punkte (Summe)')
                     elif sel_calc == "Durchschnitt Cup-Punkte":
@@ -772,8 +763,7 @@ try:
     else:
         st.info("Bitte lade CSV-Dateien in der Seitenleiste hoch, um zu beginnen.")
 
-# NEU: Das von dir gewünschte ausführliche Fehlerprotokoll (Stacktrace)
 except Exception as e:
     st.error(f"Ein unerwarteter Fehler ist aufgetreten: {e}")
-    with st.expander("Fehlerdetails anzeigen (für Entwickler)"):
+    with st.expander("Fehlerdetails anzeigen (Für Entwickler/Debugging)"):
         st.code(traceback.format_exc(), language="text")
